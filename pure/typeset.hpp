@@ -218,6 +218,92 @@ inline P present(const ex::E& e, bool paren, const Style& st) {
   return paren ? pn(PK::Paren, {r}) : r;
 }
 
+// ---------------------------------------------------------------- 小学校の計算を描く
+//
+// **CAS の木からは描けない。** `0.96 ÷ 1.2` は正規形にすると `4/5` に畳まれて ÷ が消えるし、
+// `2 5/8` も `21/8` になる。書かれたとおりの絵が欲しいので、**テキストから直に見た目の木を作る**。
+// 値のほうは同じテキストを ex::parse に通せば得られる（frac / mixed も読める）ので、
+// 「絵」と「値」の出どころは 1 つのテキストに保たれる。
+//
+// 記法: 数（小数点あり）・`+ - × ÷ ( ) { }`、`frac(a,b)` は縦の分数、`mixed(w,a,b)` は帯分数。
+inline P present_arith(const std::string& s, size_t& i, const Style& st, char stop = 0);
+
+inline P arith_atom(const std::string& s, size_t& i, const Style& st) {
+  std::vector<P> row;
+  while (i < s.size() && (s[i] == ' ' || s[i] == '\t')) ++i;
+  if (i >= s.size()) return pn(PK::Row, row);
+  // frac(a,b) と mixed(w,a,b)
+  if (s.compare(i, 5, "frac(") == 0) {
+    i += 5;
+    P a = present_arith(s, i, st, ',');
+    if (i < s.size() && s[i] == ',') ++i;
+    P b = present_arith(s, i, st, ')');
+    if (i < s.size() && s[i] == ')') ++i;
+    return pn(PK::Frac, {a, b});
+  }
+  if (s.compare(i, 6, "mixed(") == 0) {
+    i += 6;
+    P w = present_arith(s, i, st, ',');
+    if (i < s.size() && s[i] == ',') ++i;
+    P a = present_arith(s, i, st, ',');
+    if (i < s.size() && s[i] == ',') ++i;
+    P b = present_arith(s, i, st, ')');
+    if (i < s.size() && s[i] == ')') ++i;
+    return pn(PK::Row, {w, pn(PK::Frac, {a, b})});     // 帯分数は整数と分数を並べるだけ
+  }
+  if (s[i] == '(') {
+    ++i;
+    P in = present_arith(s, i, st, ')');
+    if (i < s.size() && s[i] == ')') ++i;
+    return pn(PK::Paren, {in});
+  }
+  if (s[i] == '{') {                                   // 中括弧は伸ばさない（教科書もそう）
+    ++i;
+    P in = present_arith(s, i, st, '}');
+    if (i < s.size() && s[i] == '}') ++i;
+    row.push_back(pg('{', "brace_l"));
+    row.push_back(in);
+    row.push_back(pg('}', "brace_r"));
+    return pn(PK::Row, row);
+  }
+  if (isdigit((unsigned char)s[i]) || s[i] == '.') {
+    while (i < s.size() && (isdigit((unsigned char)s[i]) || s[i] == '.')) {
+      const char c = s[i++];
+      row.push_back(c == '.' ? pg('.', "dot") : pg(c, std::string(1, c)));
+    }
+    return pn(PK::Row, row);
+  }
+  if (isalpha((unsigned char)s[i])) {                  // 文字（面積の cm などは入れない）
+    row.push_back(pg(s[i], std::string(1, s[i]), st.italic_vars));
+    ++i;
+    return pn(PK::Row, row);
+  }
+  ++i;                                                 // 読めない字は捨てる
+  return pn(PK::Row, row);
+}
+
+inline P present_arith(const std::string& s, size_t& i, const Style& st, char stop) {
+  std::vector<P> row;
+  for (;;) {
+    while (i < s.size() && (s[i] == ' ' || s[i] == '\t')) ++i;
+    if (i >= s.size()) break;
+    if (stop && s[i] == stop) break;
+    if (s[i] == ')' || s[i] == '}' || s[i] == ',') break;
+    if (s[i] == '+') { row.push_back(pg('+', "+")); ++i; continue; }
+    if (s[i] == '-') { row.push_back(pg(st.minus_cp, "-")); ++i; continue; }
+    if (s[i] == '=') { row.push_back(pg('=', "=")); ++i; continue; }
+    if (s.compare(i, 2, "\xc3\x97") == 0) { row.push_back(pg(0x00D7, "times")); i += 2; continue; }
+    if (s.compare(i, 2, "\xc3\xb7") == 0) { row.push_back(pg(0x00F7, "div")); i += 2; continue; }
+    row.push_back(arith_atom(s, i, st));
+  }
+  return pn(PK::Row, row);
+}
+
+inline P present_arith(const std::string& s, const Style& st = Style()) {
+  size_t i = 0;
+  return present_arith(s, i, st, 0);
+}
+
 // ---------------------------------------------------------------- フォント
 
 struct Font {

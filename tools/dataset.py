@@ -28,7 +28,8 @@ CLASSES = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
 
 
 def build(out_dir, n, seed, px_min, px_max, font_path="", no_images=False,
-          font_italic="", italic_pct=50, minus2212_pct=50, prefix="", photo_like=False):
+          font_italic="", italic_pct=50, minus2212_pct=50, prefix="", photo_like=False,
+          arith=False):
     f = T.Font(font_path)
     fi = None
     if italic_pct > 0:
@@ -46,7 +47,7 @@ def build(out_dir, n, seed, px_min, px_max, font_path="", no_images=False,
     ex_lines = []
     for _ in range(n):
         # 乱数を引く順番は C++ と 1 対 1（順序が違うと同じ種でも別のデータになる）
-        src = G.one(r)
+        src = G.arith(r) if arith else G.one(r)
         px = px_min + r.below(px_max - px_min + 1)
         use_ital = r.below(100) < italic_pct
         use_2212 = r.below(100) < minus2212_pct
@@ -64,9 +65,11 @@ def build(out_dir, n, seed, px_min, px_max, font_path="", no_images=False,
         fi_use = fi if st.italic_vars else None
         stem = "%s%06d" % (prefix, made)
         if no_images:
-            w, h, boxes, _ = T.layout_boxes(f, e, px, fi_use, st)
+            w, h, boxes, _ = (T.layout_boxes_arith(f, src, px, fi_use, st) if arith
+                              else T.layout_boxes(f, e, px, fi_use, st))
         else:
-            img, boxes = T.render(f, e, px, fi_use, st)
+            img, boxes = (T.render_arith(f, src, px, fi_use, st) if arith
+                          else T.render(f, e, px, fi_use, st))
             img.save(os.path.join(out_dir, "images", stem + ".png"))
             w, h = img.width, img.height
         with open(os.path.join(out_dir, "labels", stem + ".txt"), "w", encoding="utf-8") as fp:
@@ -97,13 +100,15 @@ def main():
     ap.add_argument("--prefix", default="")
     ap.add_argument("--photo-like", dest="photo_like", action="store_true",
                     help="紙と字の明るさを振り、たまにぼかす（写真に寄せる）")
+    ap.add_argument("--arith", action="store_true",
+                    help="小学校の計算（× ÷ 小数点 帯分数 中括弧）を作る")
     ap.add_argument("--font", default="")
     ap.add_argument("--no-images", dest="no_images", action="store_true",
                     help="枠だけ作る（パリティ確認や、絵が要らない検算のため）")
     a = ap.parse_args()
     made, skipped, f = build(a.out, a.n, a.seed, a.px_min, a.px_max, a.font, a.no_images,
                              a.font_italic, a.italic_pct, a.minus2212_pct, a.prefix,
-                             a.photo_like)
+                             a.photo_like, a.arith)
     print("%s に %d 件（捨てた式 %d 件、px %d..%d、font upem %d）"
           % (a.out, made, skipped, a.px_min, a.px_max, f.upem))
     return 0

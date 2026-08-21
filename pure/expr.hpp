@@ -26,6 +26,7 @@
 #include <cstdio>
 #include <memory>
 #include <numeric>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -295,6 +296,14 @@ inline E pow_e(const E& b_in, const E& e_in) {
 inline E fn_e(const std::string& name, std::vector<E> args) {
   for (E& a : args) a = simp(a);
   if (name == "sqrt" && args.size() == 1) return pow_e(args[0], num(Rat(1, 2)));
+  // 小学校の書き方を「1 つのテキスト」で表すための記法。値としては割り算と足し算に畳む
+  // （絵のほうは ts::present_arith が書かれたとおりに描く）。
+  //   frac(a,b)      縦の分数
+  //   mixed(w,a,b)   帯分数（w + a/b）
+  if (name == "frac" && args.size() == 2)
+    return mul_n({args[0], pow_e(args[1], num(Rat(-1)))});
+  if (name == "mixed" && args.size() == 3)
+    return add_n({args[0], mul_n({args[1], pow_e(args[2], num(Rat(-1)))})});
   if (args.size() == 1 && is_num(args[0])) {
     const Rat& r = args[0]->num;
     if (name == "abs") return num(r.neg() ? -r : r);
@@ -729,7 +738,7 @@ inline std::string to_latex(const E& e, int parent = 0) {
 
 // 関数として扱う名前（これ以外の名前 + 括弧は掛け算）
 inline bool is_fn_name(const std::string& n) {
-  return n == "sqrt" || n == "sin" || n == "cos" || n == "tan" || n == "ln" || n == "exp" ||
+  return n == "sqrt" || n == "frac" || n == "mixed" || n == "sin" || n == "cos" || n == "tan" || n == "ln" || n == "exp" ||
          n == "abs";
 }
 
@@ -784,13 +793,22 @@ struct Parser {
       else return l;
     }
   }
+  // 小学校の計算では × と ÷ が字として書かれる（UTF-8 で 2 バイト）。読めるようにしておく
+  bool eat_utf8(const char* seq) {
+    ws();
+    const size_t n = strlen(seq);
+    if (s.compare(i, n, seq) == 0) { i += n; return true; }
+    return false;
+  }
+
   E parse_mul() {
     E l = parse_unary();
     for (;;) {
       ws();
-      if (eat('*')) l = mul_n({l, parse_unary()});
-      else if (eat('/')) l = mul_n({l, pow_e(parse_unary(), num(Rat(-1)))});
-      else if (i < s.size() && (isalpha((unsigned char)s[i]) || s[i] == '(' ||
+      if (eat('*') || eat_utf8("\xc3\x97")) l = mul_n({l, parse_unary()});           // * ×
+      else if (eat('/') || eat_utf8("\xc3\xb7"))                                     // / ÷
+        l = mul_n({l, pow_e(parse_unary(), num(Rat(-1)))});
+      else if (i < s.size() && (isalpha((unsigned char)s[i]) || s[i] == '(' || s[i] == '{' ||
                                 isdigit((unsigned char)s[i]))) {
         // 暗黙の掛け算。ただし数のあとに数が来る形（"2 3"）は書き間違いとして扱う
         if (isdigit((unsigned char)s[i]) && is_num(l)) { err = "数が続いています"; return l; }
@@ -816,6 +834,11 @@ struct Parser {
     if (eat('(')) {
       E e = parse_add();
       if (!eat(')')) err = "閉じ括弧がありません";
+      return e;
+    }
+    if (eat('{')) {                                  // 小学校の計算は { } も使う
+      E e = parse_add();
+      if (!eat('}')) err = "閉じ中括弧がありません";
       return e;
     }
     if (isdigit((unsigned char)s[i])) {

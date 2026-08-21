@@ -35,6 +35,9 @@ struct Sym {
   int base_y = 0;
   // 構造を畳んだ原子。set なら cls は "@" で、e に解析済みの式が入っている
   bool atom = false;
+  // **その原子が縦の分数だったか**。帯分数（2 5/8 = 2 + 5/8）の判定に要る。
+  // 数のすぐ右に分数が来たら、掛け算ではなく足し算になる（小学校の書き方）。
+  bool from_frac = false;
   ex::E e;
   int cx() const { return (x0 + x1) / 2; }
   int cy() const { return (y0 + y1) / 2; }
@@ -114,9 +117,13 @@ inline int widest_sqrt_bar(const std::vector<Sym>& v) {
   return best;
 }
 
+// 括弧の開き（小学校の計算は { } も使う。どちらも同じ扱い）
+inline bool is_open(const Sym& s) { return !s.atom && (s.cls == "(" || s.cls == "brace_l"); }
+inline bool is_close(const Sym& s) { return !s.atom && (s.cls == ")" || s.cls == "brace_r"); }
+
 inline int first_open_paren(const std::vector<Sym>& v) {
   for (size_t i = 0; i < v.size(); ++i)
-    if (!v[i].atom && v[i].cls == "(") return (int)i;
+    if (is_open(v[i])) return (int)i;
   return -1;
 }
 
@@ -124,8 +131,8 @@ inline int match_close(const std::vector<Sym>& v, int i) {
   int depth = 0;
   for (size_t k = (size_t)i; k < v.size(); ++k) {
     if (v[k].atom) continue;
-    if (v[k].cls == "(") ++depth;
-    else if (v[k].cls == ")") { if (--depth == 0) return (int)k; }
+    if (is_open(v[k])) ++depth;
+    else if (is_close(v[k])) { if (--depth == 0) return (int)k; }
   }
   return -1;
 }
@@ -164,7 +171,9 @@ inline bool collapse_one(std::vector<Sym>& v, std::string* why) {
     if (!why->empty()) return false;
     const E de = parse_flat(down, why);
     if (!why->empty()) return false;
-    rest.push_back(make_atom(div(nu, de), ux0, uy0, ux1, uy1, bar.cy()));
+    Sym fr = make_atom(div(nu, de), ux0, uy0, ux1, uy1, bar.cy());
+    fr.from_frac = true;                            // 帯分数の判定に使う
+    rest.push_back(fr);
     // 原子を末尾に足したので**必ず並べ直す**。これを忘れると、以降の = や ± の分割が
     // 位置と無関係な順序で行われる（実測: `x/4 + 5 = 2` が `5 = (x/4)^2` に化けた）
     std::sort(rest.begin(), rest.end(), by_x);
@@ -244,12 +253,32 @@ inline bool collapse_one(std::vector<Sym>& v, std::string* why) {
 // ---------------------------------------------------------------- 2) 平らな列を割る
 
 inline bool is_digit_cls(const Sym& s) {
-  return !s.atom && s.cls.size() >= 1 && isdigit((unsigned char)s.cls[0]);
+  return !s.atom && s.cls.size() >= 1 && (isdigit((unsigned char)s.cls[0]) || s.cls[0] == '.');
 }
 
-// 隣り合う桁をまとめる（同じ行にあって、隙間が狭いものだけ）
+// 小数点。クラス名は "dot"（小学校の計算に出る）
+inline bool is_dot_cls(const Sym& s) { return !s.atom && s.cls == "dot"; }
+
+// 隣り合う桁をまとめる（同じ行にあって、隙間が狭いものだけ）。
+// **小数点も桁として扱う**（3 . 7 -> "3.7"）。点は行の下にあるので、同じ行かの判定は
+// 中心ではなく「下端が近いか」で見る。
 inline void merge_digits(std::vector<Sym>& v) {
   for (size_t i = 0; i + 1 < v.size();) {
+    // 数 . 数 の並びを 1 つにする（点は小さいので大きさの条件を通らない。先に処理する）
+    if (i + 2 < v.size() && is_digit_cls(v[i]) && is_dot_cls(v[i + 1]) &&
+        is_digit_cls(v[i + 2])) {
+      const int h = std::max(v[i].h(), v[i + 2].h());
+      const int g1 = v[i + 1].x0 - v[i].x1, g2 = v[i + 2].x0 - v[i + 1].x1;
+      if (g1 * 100 <= h * T_DIGIT_GAP && g2 * 100 <= h * T_DIGIT_GAP &&
+          std::abs(v[i].y1 - v[i + 2].y1) * 100 <= h * T_SAME_LINE) {
+        v[i].cls += "." + v[i + 2].cls;
+        v[i].x1 = v[i + 2].x1;
+        v[i].y0 = std::min(v[i].y0, v[i + 2].y0);
+        v[i].y1 = std::max(v[i].y1, v[i + 2].y1);
+        v.erase(v.begin() + (long)i + 1, v.begin() + (long)i + 3);
+        continue;
+      }
+    }
     if (is_digit_cls(v[i]) && is_digit_cls(v[i + 1])) {
       const int h = std::max(v[i].h(), v[i + 1].h());
       const int gap = v[i + 1].x0 - v[i].x1;
@@ -274,10 +303,20 @@ inline long long to_int(const std::string& s) {
   return v;
 }
 
+// 数の文字列（小数もある）を厳密有理数にする。0.25 は 1/4（double は通さない）
+inline ex::Rat to_rat(const std::string& s) {
+  const size_t dot = s.find('.');
+  if (dot == std::string::npos) return ex::Rat(to_int(s));
+  const std::string ip = s.substr(0, dot), fp = s.substr(dot + 1);
+  long long den = 1;
+  for (size_t i = 0; i < fp.size(); ++i) den *= 10;
+  return ex::Rat(to_int(ip) * den + to_int(fp), den);
+}
+
 inline ex::E leaf(const Sym& s, std::string* why) {
   using namespace ex;
   if (s.atom) return s.e;
-  if (is_digit_cls(s)) return num(to_int(s.cls));
+  if (is_digit_cls(s)) return num(to_rat(s.cls));
   if (s.cls.size() == 1 && isalpha((unsigned char)s.cls[0])) return sym(s.cls);
   *why = "解釈できない記号: " + s.cls;
   return num(Rat(0));
@@ -348,13 +387,29 @@ inline ex::E parse_flat(std::vector<Sym> v, std::string* why) {
     return v[0].cls == "-" ? neg(a) : a;
   }
 
-  // 5) 並置（掛け算）と上付き
+  // 5) × と ÷ で割る（右から。左結合にするため）。± より内側で、並置より外側
+  for (size_t i = v.size(); i-- > 1;) {
+    if (v[i].atom) continue;
+    const std::string& c = v[i].cls;
+    if (c != "times" && c != "div") continue;
+    std::vector<Sym> l(v.begin(), v.begin() + (long)i), r(v.begin() + (long)i + 1, v.end());
+    if (l.empty() || r.empty()) { *why = "演算子の両側が空です"; return num(Rat(0)); }
+    const E a = parse_flat(l, why);
+    if (!why->empty()) return num(Rat(0));
+    const E b = parse_flat(r, why);
+    if (!why->empty()) return num(Rat(0));
+    return c == "times" ? mul(a, b) : div(a, b);
+  }
+
+  // 6) 並置（掛け算）と上付き。**数のすぐ右の分数は帯分数**（2 5/8 = 2 + 5/8）
   const int h_ref = median_h(v);
   std::vector<E> factors;
+  std::vector<bool> add_it;                          // その因子は掛けるのではなく足す
   for (size_t i = 0; i < v.size();) {
     const Sym base = v[i];
     E b = leaf(base, why);
     if (!why->empty()) return num(Rat(0));
+    const bool mixed = i > 0 && base.atom && base.from_frac && is_digit_cls(v[i - 1]);
     size_t k = i + 1;
     std::vector<Sym> sup;
     while (k < v.size() && is_sup(base, v[k], h_ref)) sup.push_back(v[k++]);
@@ -364,11 +419,13 @@ inline ex::E parse_flat(std::vector<Sym> v, std::string* why) {
       b = pow_e(b, p);
     }
     factors.push_back(b);
+    add_it.push_back(mixed);
     i = k;
   }
   if (factors.empty()) { *why = "式になりません"; return num(Rat(0)); }
   E r = factors[0];
-  for (size_t i = 1; i < factors.size(); ++i) r = mul(r, factors[i]);
+  for (size_t i = 1; i < factors.size(); ++i)
+    r = add_it[i] ? add(r, factors[i]) : mul(r, factors[i]);
   return r;
 }
 

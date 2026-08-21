@@ -23,10 +23,13 @@
 #include "pipeline.hpp"
 #include "stb_image.h"
 #include <cstdio>
+#include <clocale>
 #include <cstring>
 #include <string>
+#include <vector>
 #ifdef _WIN32
 #include <windows.h>
+#include <shellapi.h>
 #include <direct.h>
 #else
 #include <sys/stat.h>
@@ -149,7 +152,10 @@ static int cmd_render(int argc, char** argv) {
   ts::Font font, font_i;
   if (!ts::load_font(font, fontp, &why)) { printf("%s\n", why.c_str()); return 1; }
   const bool has_i = st.italic_vars && ts::load_font(font_i, fontip, nullptr, true);
-  const ts::Rendered R = ts::render(font, has_i ? &font_i : nullptr, e, px, st);
+  // --arith は「書かれたとおりに描く」（÷ や帯分数は正規形で消えるので、木を経由しない）
+  const ts::Rendered R = has_flag(argc, argv, "--arith")
+                             ? ts::render_arith(font, has_i ? &font_i : nullptr, src, px, st)
+                             : ts::render(font, has_i ? &font_i : nullptr, e, px, st);
   if (!out.empty()) {
     if (!stbi_write_png(out.c_str(), R.w, R.h, 1, R.gray.data(), R.w)) {
       printf("cannot write %s\n", out.c_str());
@@ -189,6 +195,8 @@ static int cmd_dataset(int argc, char** argv) {
   const int minus_pct = std::atoi(arg_of(argc, argv, "--minus2212-pct", "50").c_str());
   const bool no_img = has_flag(argc, argv, "--no-images");   // 枠だけ作る（パリティ確認用）
   const bool photo_like = has_flag(argc, argv, "--photo-like");
+  // 小学校の計算（× ÷ 小数点 帯分数 中括弧）を作るモード。**描く道が別**（木を経由しない）
+  const bool arith_mode = has_flag(argc, argv, "--arith");
   if (dir.empty()) {
     printf("usage: mathcam dataset --out data/train --n 2000 [--seed 1] [--px-min 32]\n"
            "                       [--px-max 64] [--font path.ttf] [--font-italic path.ttf]\n"
@@ -221,7 +229,7 @@ static int cmd_dataset(int argc, char** argv) {
   for (int i = 0; i < n; ++i) {
     // 乱数を使う順番は**固定**する（1 つの式の中で 2 回呼ぶと C++ の評価順が不定になり、
     // Python 側と食い違う。この落とし穴は前に踏んで RESUME に書いてある）
-    const std::string src = gx::one(rng);
+    const std::string src = arith_mode ? gx::arith(rng) : gx::one(rng);
     const int px = (int)(px_min + (int)rng.below((uint64_t)(px_max - px_min + 1)));
     const bool use_ital = (int)rng.below(100) < ital_pct;
     const bool use_2212 = (int)rng.below(100) < minus_pct;
@@ -238,7 +246,9 @@ static int cmd_dataset(int argc, char** argv) {
     st.paper = paper;
     st.ink = ink;
     st.blur = blur;
-    const ts::Rendered R = ts::render(font, st.italic_vars ? &font_i : nullptr, e, px, st);
+    const ts::Rendered R =
+        arith_mode ? ts::render_arith(font, st.italic_vars ? &font_i : nullptr, src, px, st)
+                   : ts::render(font, st.italic_vars ? &font_i : nullptr, e, px, st);
     char stem[40];
     snprintf(stem, sizeof stem, "%s%06d", prefix.c_str(), made);
     if (!no_img) {
@@ -276,9 +286,10 @@ static int cmd_genexpr(int argc, char** argv) {
   const int n = std::atoi(arg_of(argc, argv, "--n", "10").c_str());
   const uint64_t seed = strtoull(arg_of(argc, argv, "--seed", "1").c_str(), nullptr, 10);
   const bool st = has_flag(argc, argv, "--state");
+  const bool arith_mode = has_flag(argc, argv, "--arith");
   Rng r(seed);
   for (int i = 0; i < n; ++i) {
-    const std::string e = gx::one(r);
+    const std::string e = arith_mode ? gx::arith(r) : gx::one(r);
     if (st) printf("%llu\t%s\n", (unsigned long long)r.s, e.c_str());
     else printf("%s\n", e.c_str());
   }
@@ -321,6 +332,7 @@ static int cmd_selftest(int argc, char** argv) {
   const std::string fontip = arg_of(argc, argv, "--font-italic", "");
   const ts::Style st = style_of(argc, argv);
   const bool show = has_flag(argc, argv, "--show-fail");
+  const bool arith_mode = has_flag(argc, argv, "--arith");
   std::string why;
   ts::Font font, font_i;
   if (!ts::load_font(font, fontp, &why)) { printf("%s\n", why.c_str()); return 1; }
@@ -329,7 +341,7 @@ static int cmd_selftest(int argc, char** argv) {
   Rng rng(seed);
   int ok = 0, bad = 0, skipped = 0, shown = 0;
   for (int i = 0; i < n; ++i) {
-    const std::string src = gx::one(rng);
+    const std::string src = arith_mode ? gx::arith(rng) : gx::one(rng);
     ex::E e = ex::parse(src, &why);
     if (!why.empty()) { ++skipped; continue; }
     // 分母が 0 になる式（生成器が y - y を作ることがある）は比べても意味がないので捨てる
@@ -346,7 +358,10 @@ static int cmd_selftest(int argc, char** argv) {
       }
       if (degenerate) { ++skipped; continue; }
     }
-    const ts::Rendered R = ts::render(font, has_i ? &font_i : nullptr, e, px, st);
+    // --arith は「書かれたとおりに描く」道（÷ と帯分数は正規形で消えるので木を経由しない）
+    const ts::Rendered R =
+        arith_mode ? ts::render_arith(font, has_i ? &font_i : nullptr, src, px, st)
+                   : ts::render(font, has_i ? &font_i : nullptr, e, px, st);
     std::vector<pl::Sym> syms;
     for (size_t k = 0; k < R.cls.size(); ++k) {
       pl::Sym s;
@@ -446,17 +461,20 @@ static int cmd_e2e(int argc, char** argv) {
   ts::Font font, font_i;
   if (!ts::load_font(font, fontp, &why)) { printf("%s\n", why.c_str()); return 1; }
   const bool has_i = st.italic_vars && ts::load_font(font_i, fontip, nullptr, true);
+  const bool arith_mode = has_flag(argc, argv, "--arith");   // 小学校の計算で測る
   onx::Graph g = onx::load_onnx(model_p);
   if (g.nodes.empty()) { printf("cannot read %s\n", model_p.c_str()); return 1; }
 
   Rng rng(seed);
   int ok = 0, bad = 0, shown = 0, skipped = 0;
   for (int i = 0; i < n; ++i) {
-    const std::string src = gx::one(rng);
+    const std::string src = arith_mode ? gx::arith(rng) : gx::one(rng);
     const int px = px_min + (int)rng.below((uint64_t)(px_max - px_min + 1));
     ex::E e = ex::parse(src, &why);
     if (!why.empty()) { ++skipped; continue; }
-    const ts::Rendered R = ts::render(font, has_i ? &font_i : nullptr, e, px, st);
+    const ts::Rendered R =
+        arith_mode ? ts::render_arith(font, has_i ? &font_i : nullptr, src, px, st)
+                   : ts::render(font, has_i ? &font_i : nullptr, e, px, st);
     // 灰色 1ch を RGB に広げる（検出器は 3ch を期待する）
     std::vector<unsigned char> rgb((size_t)R.w * R.h * 3);
     for (size_t k = 0; k < (size_t)R.w * R.h; ++k) {
@@ -620,6 +638,29 @@ static int cmd_photo(int argc, char** argv) {
 int main(int argc, char** argv) {
 #ifdef _WIN32
   SetConsoleOutputCP(CP_UTF8);
+  // **CRT も UTF-8 にする。** argv を UTF-8 に直すだけだと、日本語の入ったパスを
+  // fopen に渡したときに開けなくなる（実測: 一時ディレクトリに日本語が入っていて書けなかった）。
+  setlocale(LC_ALL, ".UTF8");
+  // **Windows の argv は ANSI（ここでは cp932）で届く。** UTF-8 に直してから使う。
+  // 直さないと `--expr "3.7 × 2"` の × が UTF-8 として読めず「余分な文字」になる
+  // （実測。パーサは UTF-8 のバイト列を見ている）。
+  std::vector<std::string> utf8_args;
+  std::vector<char*> utf8_argv;
+  {
+    int wargc = 0;
+    LPWSTR* wargv = CommandLineToArgvW(GetCommandLineW(), &wargc);
+    if (wargv && wargc == argc) {
+      for (int i = 0; i < wargc; ++i) {
+        const int n = WideCharToMultiByte(CP_UTF8, 0, wargv[i], -1, nullptr, 0, nullptr, nullptr);
+        std::string s((size_t)(n > 0 ? n - 1 : 0), 0);
+        if (n > 1) WideCharToMultiByte(CP_UTF8, 0, wargv[i], -1, &s[0], n, nullptr, nullptr);
+        utf8_args.push_back(s);
+      }
+      for (std::string& s : utf8_args) utf8_argv.push_back(&s[0]);
+      argv = utf8_argv.data();
+    }
+    if (wargv) LocalFree(wargv);
+  }
 #endif
   if (argc < 2) {
     printf("usage: mathcam <eval|solve|render|dataset|parse|selftest|photo> ...\n");

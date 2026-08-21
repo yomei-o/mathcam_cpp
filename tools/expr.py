@@ -353,6 +353,12 @@ def fn_e(name, args):
     args = [simp(a) for a in args]
     if name == "sqrt" and len(args) == 1:
         return pow_e(args[0], num(Rat(1, 2)))
+    # 小学校の書き方を「1 つのテキスト」で表すための記法。値としては割り算と足し算に畳む
+    # （絵のほうは typeset.present_arith が書かれたとおりに描く）
+    if name == "frac" and len(args) == 2:
+        return mul_n([args[0], pow_e(args[1], num(-1))])
+    if name == "mixed" and len(args) == 3:
+        return add_n([args[0], mul_n([args[1], pow_e(args[2], num(-1))])])
     if len(args) == 1 and is_num(args[0]):
         r = args[0].num
         if name == "abs":
@@ -680,7 +686,7 @@ def to_latex(e):
 # ---------------------------------------------------------------- 構文解析
 
 
-FN_NAMES = ("sqrt", "sin", "cos", "tan", "ln", "exp", "abs")
+FN_NAMES = ("sqrt", "frac", "mixed", "sin", "cos", "tan", "ln", "exp", "abs")
 
 
 def is_fn_name(n):
@@ -753,15 +759,24 @@ class Parser:
             else:
                 return l
 
+    def eat_str(self, seq):
+        """小学校の計算では × と ÷ が字として書かれる。読めるようにしておく。"""
+        self.ws()
+        if self.s.startswith(seq, self.i):
+            self.i += len(seq)
+            return True
+        return False
+
     def parse_mul(self):
         l = self.parse_unary()
         while True:
             self.ws()
-            if self.eat("*"):
+            if self.eat("*") or self.eat_str("×"):          # * ×
                 l = mul_n([l, self.parse_unary()])
-            elif self.eat("/"):
+            elif self.eat("/") or self.eat_str("÷"):        # / ÷
                 l = mul_n([l, pow_e(self.parse_unary(), num(-1))])
             elif self.i < len(self.s) and (self.s[self.i].isalpha() or self.s[self.i] == "("
+                                          or self.s[self.i] == "{"
                                           or self.s[self.i].isdigit()):
                 if self.s[self.i].isdigit() and is_num(l):
                     self.err = "数が続いています"
@@ -794,6 +809,11 @@ class Parser:
             e = self.parse_add()
             if not self.eat(")"):
                 self.err = "閉じ括弧がありません"
+            return e
+        if self.eat("{"):                                # 小学校の計算は { } も使う
+            e = self.parse_add()
+            if not self.eat("}"):
+                self.err = "閉じ中括弧がありません"
             return e
         if self.s[self.i].isdigit():
             v = 0

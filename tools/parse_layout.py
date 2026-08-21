@@ -31,13 +31,15 @@ T_DIGIT_GAP = 40        # 桁をつなぐ隙間の上限（高さに対する %�
 
 
 class Sym:
-    __slots__ = ("cls", "x0", "y0", "x1", "y1", "base_y", "atom", "e")
+    __slots__ = ("cls", "x0", "y0", "x1", "y1", "base_y", "atom", "from_frac", "e")
 
     def __init__(self, cls="", x0=0, y0=0, x1=0, y1=0, base_y=None, atom=False, e=None):
         self.cls = cls
         self.x0, self.y0, self.x1, self.y1 = x0, y0, x1, y1
         self.base_y = y1 if base_y is None else base_y
         self.atom = atom
+        # その原子が縦の分数だったか（帯分数 2 5/8 = 2 + 5/8 の判定に要る）
+        self.from_frac = False
         self.e = e
 
     def cx(self):
@@ -81,6 +83,15 @@ def run_baseline(v):
     return b if any_ else (v[0].y1 if v else 0)
 
 
+def is_open(s):
+    """括弧の開き（小学校の計算は { } も使う。どちらも同じ扱い）。"""
+    return (not s.atom) and s.cls in ("(", "brace_l")
+
+
+def is_close(s):
+    return (not s.atom) and s.cls in (")", "brace_r")
+
+
 def widest_frac(v):
     best = -1
     for i, s in enumerate(v):
@@ -100,7 +111,7 @@ def widest_sqrt_bar(v):
 
 def first_open_paren(v):
     for i, s in enumerate(v):
-        if not s.atom and s.cls == "(":
+        if is_open(s):
             return i
     return -1
 
@@ -110,9 +121,9 @@ def match_close(v, i):
     for k in range(i, len(v)):
         if v[k].atom:
             continue
-        if v[k].cls == "(":
+        if is_open(v[k]):
             depth += 1
-        elif v[k].cls == ")":
+        elif is_close(v[k]):
             depth -= 1
             if depth == 0:
                 return k
@@ -148,7 +159,9 @@ def collapse_one(v):
             raise Fail("分数の上か下が空です")
         nu = parse_flat(up)
         de = parse_flat(down)
-        rest.append(make_atom(X.div(nu, de), ux0, uy0, ux1, uy1, bar.cy()))
+        fr = make_atom(X.div(nu, de), ux0, uy0, ux1, uy1, bar.cy())
+        fr.from_frac = True                          # 帯分数の判定に使う
+        rest.append(fr)
         # 原子を末尾に足したので**必ず並べ直す**（忘れると = や ± の分割が位置と無関係になる）
         rest.sort(key=lambda s: s.x0)
         return True, rest
@@ -211,13 +224,41 @@ def collapse_one(v):
 
 
 def is_digit_cls(s):
-    return (not s.atom) and len(s.cls) >= 1 and s.cls[0].isdigit()
+    return (not s.atom) and len(s.cls) >= 1 and (s.cls[0].isdigit() or s.cls[0] == ".")
+
+
+def is_dot_cls(s):
+    """小数点。クラス名は "dot"（小学校の計算に出る）。"""
+    return (not s.atom) and s.cls == "dot"
+
+
+def to_rat(t):
+    """数の文字列（小数もある）を厳密有理数にする。0.25 は 1/4（double は通さない）。"""
+    if "." not in t:
+        return X.Rat(int(t))
+    ip, fp = t.split(".", 1)
+    den = 10 ** len(fp)
+    return X.Rat(int(ip or "0") * den + int(fp or "0"), den)
 
 
 def merge_digits(v):
     """隣り合う桁をまとめる（同じ行にあって、隙間が狭いものだけ）。"""
     i = 0
     while i + 1 < len(v):
+        # 数 . 数 の並びを 1 つにする（点は小さいので大きさの条件を通らない。先に処理する）
+        if (i + 2 < len(v) and is_digit_cls(v[i]) and is_dot_cls(v[i + 1])
+                and is_digit_cls(v[i + 2])):
+            h = max(v[i].h(), v[i + 2].h())
+            g1 = v[i + 1].x0 - v[i].x1
+            g2 = v[i + 2].x0 - v[i + 1].x1
+            if (g1 * 100 <= h * T_DIGIT_GAP and g2 * 100 <= h * T_DIGIT_GAP
+                    and abs(v[i].y1 - v[i + 2].y1) * 100 <= h * T_SAME_LINE):
+                v[i].cls += "." + v[i + 2].cls
+                v[i].x1 = v[i + 2].x1
+                v[i].y0 = min(v[i].y0, v[i + 2].y0)
+                v[i].y1 = max(v[i].y1, v[i + 2].y1)
+                del v[i + 1:i + 3]
+                continue
         if is_digit_cls(v[i]) and is_digit_cls(v[i + 1]):
             h = max(v[i].h(), v[i + 1].h())
             gap = v[i + 1].x0 - v[i].x1
@@ -238,7 +279,7 @@ def leaf(s):
     if s.atom:
         return s.e
     if is_digit_cls(s):
-        return X.num(int(s.cls))
+        return X.num(to_rat(s.cls))
     if len(s.cls) == 1 and s.cls.isalpha():
         return X.sym(s.cls)
     raise Fail("解釈できない記号: " + s.cls)
@@ -295,13 +336,26 @@ def parse_flat(v_in):
         a = parse_flat(v[1:])
         return X.neg(a) if v[0].cls == "-" else a
 
-    # 5) 並置（掛け算）と上付き
+    # 5) × と ÷ で割る（右から。左結合にするため）。± より内側で、並置より外側
+    for i in range(len(v) - 1, 0, -1):
+        s = v[i]
+        if s.atom or s.cls not in ("times", "div"):
+            continue
+        l, r = v[:i], v[i + 1:]
+        if not l or not r:
+            raise Fail("演算子の両側が空です")
+        a, b = parse_flat(l), parse_flat(r)
+        return X.mul(a, b) if s.cls == "times" else X.div(a, b)
+
+    # 6) 並置（掛け算）と上付き。**数のすぐ右の分数は帯分数**（2 5/8 = 2 + 5/8）
     h_ref = median_h(v)
     factors = []
+    add_it = []
     i = 0
     while i < len(v):
         base = v[i]
         b = leaf(base)
+        mixed = i > 0 and base.atom and base.from_frac and is_digit_cls(v[i - 1])
         k = i + 1
         sup = []
         while k < len(v) and is_sup(base, v[k], h_ref):
@@ -310,12 +364,13 @@ def parse_flat(v_in):
         if sup:
             b = X.pow_e(b, parse_flat(sup))
         factors.append(b)
+        add_it.append(mixed)
         i = k
     if not factors:
         raise Fail("式になりません")
     r = factors[0]
-    for f in factors[1:]:
-        r = X.mul(r, f)
+    for j in range(1, len(factors)):
+        r = X.add(r, factors[j]) if add_it[j] else X.mul(r, factors[j])
     return r
 
 

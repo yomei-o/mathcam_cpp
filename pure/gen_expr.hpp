@@ -20,6 +20,53 @@ inline long long pick(Rng& r, long long lo, long long hi) {
   return lo + (long long)r.below((uint64_t)(hi - lo + 1));
 }
 
+// ---------------------------------------------------------------- 小学校の計算
+//
+// 教科書の書き方（× ÷ を字で書く、小数点、帯分数、中括弧）で 1 行を作る。
+// 返すのは **ts::present_arith が読める記法**（frac / mixed）で、同じ文字列を ex::parse に
+// 通せば値も出る。**乱数は 1 つずつローカルに受ける**（1 つの式で 2 回呼ぶと C++ の評価順が
+// 不定で、Python 側と食い違う。この落とし穴は前に踏んで RESUME に書いてある）。
+inline std::string dec(Rng& r, long long lo, long long hi, int digits) {
+  const long long ip = pick(r, lo, hi);
+  if (digits <= 0) return std::to_string(ip);
+  const long long fp = pick(r, 1, digits == 1 ? 9 : 99);
+  return std::to_string(ip) + "." + std::to_string(fp);
+}
+
+inline std::string arith(Rng& r) {
+  const uint64_t kind = r.below(100);
+  if (kind < 25) {                                   // 小数の四則
+    const std::string a = dec(r, 1, 9, 1);
+    const std::string b = dec(r, 1, 9, 1);
+    const std::string c = dec(r, 1, 20, 1);
+    const std::string d = dec(r, 1, 9, 1);
+    return a + " \xc3\x97 (" + b + " - 0." + std::to_string(pick(r, 1, 9)) + ") + " + c +
+           " \xc3\xb7 " + d;
+  }
+  if (kind < 45) {                                   // 中括弧の入った整数の計算
+    const long long a = pick(r, 2, 12), b = pick(r, 2, 9), c = pick(r, 10, 40),
+                    d = pick(r, 1, 9), e = pick(r, 2, 9);
+    return "{" + std::to_string(a) + " \xc3\x97 " + std::to_string(b) + " - (" +
+           std::to_string(c) + " - " + std::to_string(d) + ")} \xc3\x97 " + std::to_string(e);
+  }
+  if (kind < 70) {                                   // 分数と帯分数
+    const long long w = pick(r, 1, 5), an = pick(r, 1, 7), ad = pick(r, 2, 9);
+    const long long bn = pick(r, 1, 7), bd = pick(r, 2, 9), k = pick(r, 2, 9);
+    return "mixed(" + std::to_string(w) + "," + std::to_string(an) + "," + std::to_string(ad) +
+           ") \xc3\x97 frac(" + std::to_string(bn) + "," + std::to_string(bd) + ") - frac(" +
+           std::to_string(bn) + "," + std::to_string(k) + ")";
+  }
+  if (kind < 85) {                                   // 分数どうしの割り算
+    const long long an = pick(r, 1, 9), ad = pick(r, 2, 9), bn = pick(r, 1, 9),
+                    bd = pick(r, 2, 9);
+    return "frac(" + std::to_string(an) + "," + std::to_string(ad) + ") \xc3\xb7 frac(" +
+           std::to_string(bn) + "," + std::to_string(bd) + ")";
+  }
+  // 大きい数の掛け算・引き算（103 × 12 - 36 のような形）
+  const long long a = pick(r, 11, 199), b = pick(r, 2, 24), c = pick(r, 2, 99);
+  return std::to_string(a) + " \xc3\x97 " + std::to_string(b) + " - " + std::to_string(c);
+}
+
 // 値（数・変数・分数）
 inline std::string atom(Rng& r, const std::string& var, int depth) {
   const uint64_t k = r.below(100);

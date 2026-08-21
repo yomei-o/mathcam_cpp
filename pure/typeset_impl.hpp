@@ -88,10 +88,9 @@ inline bool load_font(Font& f, const std::string& path_in, std::string* why = nu
 }
 
 // 組版して画素に落とす。返る箱は「画素・y は下向き正」で、認識器の正解枠にそのまま使える。
-inline Rendered render(const Font& f, const Font* fi, const ex::E& e, int px,
-                       const Style& st = Style()) {
+inline Rendered render_p(const Font& f, const Font* fi, const P& p, int px,
+                         const Style& st = Style()) {
   Rendered R;
-  const P p = present(e, false, st);
   Layout L = lay(f, fi, p, 1, 1);
 
   // 実際に置かれたものの範囲を取る（layout の box より、描いた枠の合併のほうが正確）
@@ -177,6 +176,18 @@ inline Rendered render(const Font& f, const Font* fi, const ex::E& e, int px,
       }
   }
   return R;
+}
+
+// 式木から描く（今までの入口）。見た目の木を先に作って render_p に渡すだけ
+inline Rendered render(const Font& f, const Font* fi, const ex::E& e, int px,
+                       const Style& st = Style()) {
+  return render_p(f, fi, present(e, false, st), px, st);
+}
+
+// 小学校の計算をテキストから描く（÷ や帯分数が畳まれないように、木を経由しない）
+inline Rendered render_arith(const Font& f, const Font* fi, const std::string& src, int px,
+                             const Style& st = Style()) {
+  return render_p(f, fi, present_arith(src, st), px, st);
 }
 
 }  // namespace ts

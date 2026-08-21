@@ -175,6 +175,105 @@ def present(e, paren=False, st=None):
     return pn(PAREN, [r]) if paren else r
 
 
+# ---------------------------------------------------------------- 小学校の計算を描く
+#
+# **CAS の木からは描けない**（0.96 ÷ 1.2 は正規形で 4/5 に、2 5/8 は 21/8 に畳まれる）。
+# 書かれたとおりの絵が欲しいので、テキストから直に見た目の木を作る。値は同じテキストを
+# X.parse に通せば出る（frac / mixed も読める）。C++ の ts::present_arith と同じ規則。
+
+
+def _arith_atom(s, i, st):
+    row = []
+    while i < len(s) and s[i] in " 	":
+        i += 1
+    if i >= len(s):
+        return pn(ROW, row), i
+    if s.startswith("frac(", i):
+        i += 5
+        a, i = _present_arith(s, i, st, ",")
+        if i < len(s) and s[i] == ",":
+            i += 1
+        b, i = _present_arith(s, i, st, ")")
+        if i < len(s) and s[i] == ")":
+            i += 1
+        return pn(FRAC, [a, b]), i
+    if s.startswith("mixed(", i):
+        i += 6
+        w, i = _present_arith(s, i, st, ",")
+        if i < len(s) and s[i] == ",":
+            i += 1
+        a, i = _present_arith(s, i, st, ",")
+        if i < len(s) and s[i] == ",":
+            i += 1
+        b, i = _present_arith(s, i, st, ")")
+        if i < len(s) and s[i] == ")":
+            i += 1
+        return pn(ROW, [w, pn(FRAC, [a, b])]), i      # 帯分数は整数と分数を並べるだけ
+    if s[i] == "(":
+        i += 1
+        inner, i = _present_arith(s, i, st, ")")
+        if i < len(s) and s[i] == ")":
+            i += 1
+        return pn(PAREN, [inner]), i
+    if s[i] == "{":                                   # 中括弧は伸ばさない（教科書もそう）
+        i += 1
+        inner, i = _present_arith(s, i, st, "}")
+        if i < len(s) and s[i] == "}":
+            i += 1
+        return pn(ROW, [pg(ord("{"), "brace_l"), inner, pg(ord("}"), "brace_r")]), i
+    if s[i].isdigit() or s[i] == ".":
+        while i < len(s) and (s[i].isdigit() or s[i] == "."):
+            c = s[i]
+            i += 1
+            row.append(pg(ord("."), "dot") if c == "." else pg(ord(c), c))
+        return pn(ROW, row), i
+    if s[i].isalpha():
+        row.append(pg(ord(s[i]), s[i], st.italic_vars))
+        return pn(ROW, row), i + 1
+    return pn(ROW, row), i + 1                        # 読めない字は捨てる
+
+
+def _present_arith(s, i, st, stop=""):
+    row = []
+    while True:
+        while i < len(s) and s[i] in " 	":
+            i += 1
+        if i >= len(s):
+            break
+        if stop and s[i] == stop:
+            break
+        if s[i] in ")},":
+            break
+        if s[i] == "+":
+            row.append(pg(ord("+"), "+"))
+            i += 1
+            continue
+        if s[i] == "-":
+            row.append(pg(st.minus_cp, "-"))
+            i += 1
+            continue
+        if s[i] == "=":
+            row.append(pg(ord("="), "="))
+            i += 1
+            continue
+        if s[i] == "×":
+            row.append(pg(0x00D7, "times"))
+            i += 1
+            continue
+        if s[i] == "÷":
+            row.append(pg(0x00F7, "div"))
+            i += 1
+            continue
+        node, i = _arith_atom(s, i, st)
+        row.append(node)
+    return pn(ROW, row), i
+
+
+def present_arith(src, st=None):
+    node, _i = _present_arith(src, 0, st or Style(), "")
+    return node
+
+
 # ---------------------------------------------------------------- フォント
 
 
@@ -402,9 +501,9 @@ def to_px(v, px, upem):
     return (num + den // 2) // den if num >= 0 else -((-num + den // 2) // den)
 
 
-def layout_boxes(f, e, px, fi=None, st=None):
-    """(w, h, [(cls, x0, y0, x1, y1)]) を返す。これが C++ と一致すべきもの。"""
-    p = present(e, False, st or Style())
+def layout_boxes_p(f, p, px, fi=None, st=None):
+    """見た目の木から (w, h, boxes, draw) を作る（C++ の render_p と同じ道）。"""
+    st = st or Style()
     L = lay(f, fi, p)
     minx, maxx = 0, L.w
     miny, maxy = -L.desc, L.asc
@@ -440,11 +539,23 @@ def layout_boxes(f, e, px, fi=None, st=None):
     return W, H, boxes, draw
 
 
-def render(f, e, px, fi=None, st=None):
+def layout_boxes(f, e, px, fi=None, st=None):
+    """式木から枠を作る（今までの入口）。"""
+    st = st or Style()
+    return layout_boxes_p(f, present(e, False, st), px, fi, st)
+
+
+def layout_boxes_arith(f, src, px, fi=None, st=None):
+    """小学校の計算をテキストから（÷ や帯分数が畳まれないように木を経由しない）。"""
+    st = st or Style()
+    return layout_boxes_p(f, present_arith(src, st), px, fi, st)
+
+
+def render_p(f, p, px, fi=None, st=None):
     """絵を描いて (PIL.Image, boxes) を返す。ラスタは C++ と一致しない（意図的、冒頭参照）。"""
     from PIL import Image, ImageDraw, ImageFont
     st = st or Style()
-    W, H, boxes, draw = layout_boxes(f, e, px, fi, st)
+    W, H, boxes, draw = layout_boxes_p(f, p, px, fi, st)
     img = Image.new("L", (W, H), st.paper)
     d = ImageDraw.Draw(img)
     fonts = {}
@@ -463,6 +574,18 @@ def render(f, e, px, fi=None, st=None):
         from PIL import ImageFilter
         img = img.filter(ImageFilter.BoxBlur(1))       # 3x3 の平均 1 回（C++ 側と同じ狙い）
     return img, boxes
+
+
+def render(f, e, px, fi=None, st=None):
+    """式木から描く（今までの入口）。"""
+    st = st or Style()
+    return render_p(f, present(e, False, st), px, fi, st)
+
+
+def render_arith(f, src, px, fi=None, st=None):
+    """小学校の計算をテキストから描く。"""
+    st = st or Style()
+    return render_p(f, present_arith(src, st), px, fi, st)
 
 
 def main():
