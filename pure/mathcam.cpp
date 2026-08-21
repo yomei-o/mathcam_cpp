@@ -723,8 +723,9 @@ static int cmd_photo(int argc, char** argv) {
     // まるごと渡しても 1 問ずつの精度が出るのが狙い
     // 塊を切る隙間の下限（帯の高さに対する %）。教科書の「(1)」と式の間隔で決まる
     const int gap_pct = std::atoi(arg_of(argc, argv, "--cell-gap", "35").c_str());
+    const int merge_pct = std::atoi(arg_of(argc, argv, "--band-merge", "25").c_str());
     const std::vector<pipeln::Cell> cs =
-        pipeln::detect_by_cells(g, px, w, h, imgsz, conf, nms, fmt, gap_pct);
+        pipeln::detect_by_cells(g, px, w, h, imgsz, conf, nms, fmt, gap_pct, merge_pct);
     printf("%zu 塊（2 段で検出）\n", cs.size());
     for (const pipeln::Cell& c : cs) {
       const pl::Result cr = pl::parse(c.syms);

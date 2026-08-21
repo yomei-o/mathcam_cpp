@@ -25,9 +25,9 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 
-def run_cells(exe, img, model, conf, crop="", gap=90):
+def run_cells(exe, img, model, conf, crop="", gap=35, merge=25):
     cmd = [exe, "photo", "--img", img, "--model", model, "--conf", str(conf), "--auto-cells",
-           "--cell-gap", str(gap)]
+           "--cell-gap", str(gap), "--band-merge", str(merge)]
     if crop:
         cmd += ["--crop", crop]
     p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -50,6 +50,7 @@ def main():
     ap.add_argument("--only", default="", help="1 枚だけ測る")
     ap.add_argument("--crop", default="", help="その 1 枚の中の範囲（x0,y0,x1,y1）")
     ap.add_argument("--cell-gap", type=int, default=35, help="塊を切る隙間の下限（帯の高さの %）")
+    ap.add_argument("--band-merge", type=int, default=25, help="行の帯をつなぐ隙間（中央値の %）")
     ap.add_argument("--show", action="store_true", help="読めた式を全部出す")
     a = ap.parse_args()
 
@@ -79,7 +80,7 @@ def main():
         if not os.path.exists(path):
             print("[SKIP] %s が無い" % path)
             continue
-        got, raw = run_cells(exe, path, a.model, a.conf, a.crop, a.cell_gap)
+        got, raw = run_cells(exe, path, a.model, a.conf, a.crop, a.cell_gap, a.band_merge)
         hit = []
         for w in wants:
             found = any(same(g, w) for g in got)

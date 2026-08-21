@@ -121,7 +121,8 @@ inline Detected detect_syms(const onx::Graph& g, const unsigned char* rgb, int w
 // 最大値の 12% にすると 9 帯に分かれ、1 問ずつの欄（1200x460）では 0.5%〜20% の
 // どれでも 4 行に切れた（つまりこの割合は効き方が鈍く、安全側）。
 inline std::vector<std::pair<int, int>> ink_bands(const unsigned char* rgb, int w, int h,
-                                                 int pad_px = 0, int pct_of_max = 12) {
+                                                 int pad_px = 0, int pct_of_max = 12,
+                                                 int merge_pct = 25) {
   std::vector<unsigned char> gray((size_t)w * h);
   for (size_t i = 0; i < gray.size(); ++i)
     gray[i] = (unsigned char)((rgb[i * 3] * 30 + rgb[i * 3 + 1] * 59 + rgb[i * 3 + 2] * 11) / 100);
@@ -158,7 +159,7 @@ inline std::vector<std::pair<int, int>> ink_bands(const unsigned char* rgb, int 
   const int med = std::max(1, hs[hs.size() / 2]);
   std::vector<std::pair<int, int>> merged{bands[0]};
   for (size_t i = 1; i < bands.size(); ++i) {
-    if (bands[i].first - merged.back().second <= std::max(2, med / 4))
+    if (bands[i].first - merged.back().second <= std::max(2, med * merge_pct / 100))
       merged.back().second = bands[i].second;
     else merged.push_back(bands[i]);
   }
@@ -253,9 +254,10 @@ struct Cell {
 // 元画像から読む。検出は塊の数だけ走る（ページ 1 枚で 20 回ほど）。
 inline std::vector<Cell> detect_by_cells(const onx::Graph& g, const unsigned char* rgb, int w,
                                         int h, int imgsz, float conf, float nms, BoxFmt fmt,
-                                        int gap_pct = 35) {   // 隙間の下限（残りは分布で決める）
+                                        int gap_pct = 35,    // 隙間の下限（残りは分布で決める）
+                                        int merge_pct = 25) {
   std::vector<Cell> out;
-  const std::vector<std::pair<int, int>> bands = ink_bands(rgb, w, h, 4);
+  const std::vector<std::pair<int, int>> bands = ink_bands(rgb, w, h, 4, 12, merge_pct);
   for (const std::pair<int, int>& b : bands) {
     const int bh = b.second - b.first;
     if (bh <= 0) continue;
@@ -281,6 +283,34 @@ inline std::vector<Cell> detect_by_cells(const onx::Graph& g, const unsigned cha
         res.syms.push_back(s);
       }
       out.push_back(res);
+    }
+    // **演算子で切れた塊はつなぐ。** 教科書は演算子の左右を広く空けるので、`3x^2 + x - 10 = 0`
+    // が `3x^2 + x` と `- 10 = 0` の 2 つに割れた（実測: ページ渡しでこの型の取りこぼしが多い）。
+    // 隙間が帯の高さの 1.5 倍以内で、片方の端が二項演算子なら 1 つにする（再検出は要らない）。
+    const auto binop = [](const std::string& c) {
+      return c == "+" || c == "-" || c == "=" || c == "times" || c == "div";
+    };
+    while (out.size() >= 2) {
+      bool merged = false;
+      for (size_t i = out.size() - 1; i >= 1; --i) {
+        Cell& L = out[i - 1];
+        Cell& R = out[i];
+        if (R.y0 != L.y0 || R.y1 != L.y1) continue;          // 同じ帯だけ
+        if (R.x0 - L.x1 > (int)(bh * 3 / 2)) continue;
+        std::vector<pl::Sym> ls = L.syms, rs = R.syms;
+        std::sort(ls.begin(), ls.end(), pl::by_x);
+        std::sort(rs.begin(), rs.end(), pl::by_x);
+        if (ls.empty() || rs.empty()) continue;
+        if (!binop(rs.front().cls) && !binop(ls.back().cls)) continue;
+        for (const pl::Sym& sm : R.syms) L.syms.push_back(sm);
+        L.x1 = std::max(L.x1, R.x1);
+        L.y0 = std::min(L.y0, R.y0);
+        L.y1 = std::max(L.y1, R.y1);
+        out.erase(out.begin() + (long)i);
+        merged = true;
+        break;
+      }
+      if (!merged) break;
     }
   }
   return out;

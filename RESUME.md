@@ -50,6 +50,35 @@ round 7 の順番待ち。
 | 小学校の計算 | `× ÷` 小数点・帯分数・中括弧を読む。組版は**テキストから直に**（`ts::present_arith`。CAS の木は `0.96 ÷ 1.2` を `4/5` に畳んでしまう）。`selftest --arith` で 300/300。検出器は 39 クラスで学習中 |
 | 小学校の手順 | 「かっこの中を計算 → かけ算・わり算 → たし算・ひき算」、帯分数は「仮分数に直す」から。**畳まない木**（`pure/arith.hpp` / `tools/arith.py`）を内側から 1 手ずつ畳む。両言語で手順の全行が一致（`tools/parity/arith.py` 132 件） |
 
+## いま止まっている所（2026-08-22 朝）
+
+**Kaggle のセッションが落ちた**（kbridge が 500 を返す = 遠隔側に届かない）。GPU が要る作業は
+新しいセッションと proxy URL を貰うまで進められない。**URL は `scratch/kaggle_base.txt` に置く**
+（コミットしない）。
+
+セッションと一緒に消えるもの / 残るもの:
+
+* 消える: `/kaggle/working` の data7 / data8 / runs7（round 6 の重み）。
+  **data8 は `python tools/make_mix.py --out /kaggle/working/data8 --exe ./mathcam` で 2 分で作り直せる**
+  （そのために混ぜ方をリポジトリに入れた）。
+* 残る: 出荷した `models/sym_det_v4.onnx`（round 6 epoch 3）と、手元に落とした候補
+  `models/cand_*.onnx`（gitignore なのでリポジトリには入らない）。
+
+GPU が戻ったらやること（この順）:
+
+1. `scratch/kaggle_base.txt` を新しい URL にして kbridge を起こす。
+2. リポジトリを clone し直し、`sh build/gcc.sh pure/mathcam.cpp -o mathcam` で建てる。
+3. `python tools/make_mix.py --out /kaggle/working/data8 --exe ./mathcam`（36,400 枚 / 2 分）。
+   **data8 は文字の重みを均し、`× と文字が同じ絵に出る`形を 8% 入れたもの**（実写で a→x、
+   b/p→t、× → x の取り違えが残っているのを狙った）。
+4. `python tools/train_det.py --data .../data8/train --val .../data8/val --epochs 18
+   --batch 64 --device 0,1 --save-period 3 --project .../runs8 --name sym8`。
+5. `python scratch/pick_checkpoint.py --run runs8/sym8 --only epoch0`（3, 6, 9 も）。
+   **実写で選ぶ**（合成 val は最後まで 0.99 台で、実写の失敗が見えない）。round 6 は
+   epoch 3 が頂点だったので、**早い epoch を先に測る**。
+6. 22/27 を超えたら `python scratch/ship_model.py --from models/cand_..._epoch3.onnx
+   --name sym_det_v5.onnx` → emcc → node の検査 → 実写 → push。
+
 ## 次の一手（優先順）
 
 1. ~~**Python 側を書いて、パリティで縛る**~~ → **完了（2026-08-21）**。
