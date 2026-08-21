@@ -451,7 +451,58 @@ inline bool is_sup(const Sym& base, const Sym& s, int h_ref) {
   // 背の高いもの（括弧など）が隣に来ただけのときを弾く。ただし**十分に持ち上がっている**なら
   // 大きさは問わない（指数が分数だと縦に長くなる。実測: 7x^(3/2) がこれで弾かれていた）。
   if (lift * 100 >= h_ref * 60) return true;
-  return s.h() * 100 <= h_ref * 130;
+  if (s.h() * 100 > h_ref * 130) return false;
+  // 持ち上がりが微妙なときは、**ベースラインが基準の縦中央より上**まで要求する。
+  // 実写は紙が傾くので、隣の括弧の塊が 30% ほど持ち上がって見えることがある（実測:
+  // `(x + 1)(x - 2) = 0` が `(x + 1)^(x - 2) = 0` になった）。本物の上付きは中央より上に乗る。
+  return s.base_y < base.cy();
+}
+
+// ---------------------------------------------------------------- 括弧と数字を直す
+//
+// 検出器から見ると `(` `)` と `6` `0` `1` は似ている（実測: 実写で `(x + 1)(x - 2) = 0` の
+// `)` が `2` に、`3.7 × (2 - 0.4)` の `(` が `6` になった。ユーザからも指摘された）。
+// 字の形では迷うが、**大きさの比**では迷わない: 括弧は**背が高くて細い**
+// （実測値: 括弧 h≈48..51 で w/h≈0.31..0.36、数字 h≈38..40 で w/h≈0.45..0.63）。
+//
+// 向き（開くのか閉じるのか）は箱では分からないので**並びで決める**:
+//   * 先頭 / 直前が演算子 / 直前が開き括弧 -> 開き
+//   * 末尾 / 直後が演算子 -> 閉じ
+//   * それ以外は開いた数と閉じた数の差で決める
+inline void fix_parens(std::vector<Sym>& v) {
+  // 数字の高さの中央値を尺度にする（上付きや括弧を混ぜると尺度がぶれる）
+  std::vector<int> hs;
+  for (const Sym& s : v)
+    if (!s.atom && s.cls.size() == 1 && s.cls[0] >= '0' && s.cls[0] <= '9') hs.push_back(s.h());
+  if (hs.size() < 2) return;
+  std::sort(hs.begin(), hs.end());
+  const int med = std::max(1, hs[hs.size() / 2]);
+  const auto is_op = [](const std::string& c) {
+    return c == "+" || c == "-" || c == "=" || c == "times" || c == "div" || c == "dot";
+  };
+  int open = 0;
+  for (size_t i = 0; i < v.size(); ++i) {
+    Sym& s = v[i];
+    if (s.atom) continue;
+    if (s.cls == "(") { ++open; continue; }
+    if (s.cls == ")") { --open; continue; }
+    const bool digit = s.cls.size() == 1 && s.cls[0] >= '0' && s.cls[0] <= '9';
+    if (!digit) continue;
+    // 実測値で決めた（括弧 h/med≈1.2..1.3 & w/h≈0.31..0.36、数字 1.0 & 0.45..0.63。
+    // 1.25 倍にすると h=49 / med=40 の閉じ括弧を 1px 差で逃した）
+    if (s.h() * 100 < med * 115) continue;           // 背が高くなければ数字のまま
+    if (s.w() * 100 > s.h() * 40) continue;          // 細くなければ数字のまま（`1` は 0.45）
+    const bool first = i == 0;
+    const bool last = i + 1 >= v.size();
+    const std::string prev = first ? std::string() : v[i - 1].cls;
+    const std::string next = last ? std::string() : v[i + 1].cls;
+    bool opening;
+    if (first || is_op(prev) || prev == "(") opening = true;
+    else if (last || is_op(next)) opening = false;
+    else opening = open <= 0;
+    s.cls = opening ? "(" : ")";
+    open += opening ? 1 : -1;
+  }
 }
 
 inline ex::E parse_flat(std::vector<Sym> v, std::string* why) {
@@ -462,6 +513,8 @@ inline ex::E parse_flat(std::vector<Sym> v, std::string* why) {
   // 0) 横棒を直す（= が 2 本の棒に、マイナスが分数線や根号の上線に化けるのを構造で戻す）
   fix_bars(v, median_h(v));
   std::sort(v.begin(), v.end(), by_x);
+  // 0.5) 背が高くて細い数字は括弧（形では迷うが、大きさの比では迷わない）
+  fix_parens(v);
 
   // 1) 構造を全部畳む（外側から内側へ）
   while (collapse_one(v, why)) {

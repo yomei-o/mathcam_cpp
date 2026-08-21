@@ -412,7 +412,57 @@ def is_sup(base, s, h_ref):
         return False
     if lift * 100 >= h_ref * 60:
         return True                                    # 十分に持ち上がっていれば大きさは問わない
-    return s.h() * 100 <= h_ref * 130
+    if s.h() * 100 > h_ref * 130:
+        return False
+    # 持ち上がりが微妙なときは、**ベースラインが基準の縦中央より上**まで要求する。
+    # 実写は紙が傾くので、隣の括弧の塊が 30% ほど持ち上がって見えることがある（実測:
+    # `(x + 1)(x - 2) = 0` が `(x + 1)^(x - 2) = 0` になった）。本物の上付きは中央より上に乗る。
+    return s.base_y < base.cy()
+
+
+# ---------------------------------------------------------------- 括弧と数字を直す
+#
+# 検出器から見ると `(` `)` と `6` `0` `1` は似ている（実測: 実写で `(x + 1)(x - 2) = 0` の
+# `)` が `2` に、`3.7 × (2 - 0.4)` の `(` が `6` になった）。字の形では迷うが、**大きさの比**
+# では迷わない: 括弧は背が高くて細い（実測 括弧 h≈48..51 / w/h≈0.31..0.36、
+# 数字 h≈38..40 / w/h≈0.45..0.63）。C++ の fix_parens と同じ規則。
+
+
+def fix_parens(v):
+    hs = sorted(s.h() for s in v if (not s.atom) and len(s.cls) == 1 and s.cls.isdigit())
+    if len(hs) < 2:
+        return v
+    med = max(1, hs[len(hs) // 2])
+    ops = ("+", "-", "=", "times", "div", "dot")
+    open_n = 0
+    for i, s in enumerate(v):
+        if s.atom:
+            continue
+        if s.cls == "(":
+            open_n += 1
+            continue
+        if s.cls == ")":
+            open_n -= 1
+            continue
+        if not (len(s.cls) == 1 and s.cls.isdigit()):
+            continue
+        # 実測値で決めた（括弧 h/med≈1.2..1.3 & w/h≈0.31..0.36、数字 1.0 & 0.45..0.63）
+        if s.h() * 100 < med * 115:              # 背が高くなければ数字のまま
+            continue
+        if s.w() * 100 > s.h() * 40:             # 細くなければ数字のまま（`1` は 0.45）
+            continue
+        first, last = i == 0, i + 1 >= len(v)
+        prev = "" if first else v[i - 1].cls
+        nxt = "" if last else v[i + 1].cls
+        if first or prev in ops or prev == "(":
+            opening = True
+        elif last or nxt in ops:
+            opening = False
+        else:
+            opening = open_n <= 0
+        s.cls = "(" if opening else ")"
+        open_n += 1 if opening else -1
+    return v
 
 
 def parse_flat(v_in):
@@ -423,6 +473,8 @@ def parse_flat(v_in):
     # 0) 横棒を直す（= が 2 本の棒に、マイナスが分数線や根号の上線に化けるのを構造で戻す）
     v = fix_bars(v, median_h(v))
     v.sort(key=lambda s: s.x0)
+    # 0.5) 背が高くて細い数字は括弧（形では迷うが、大きさの比では迷わない）
+    v = fix_parens(v)
 
     # 1) 構造を全部畳む（外側から内側へ）
     while True:
