@@ -106,6 +106,73 @@ def median_h(v):
     return max(1, hs[len(hs) // 2])
 
 
+# ---------------------------------------------------------------- 横棒を直す
+#
+# 検出器から見ると、**マイナス（U+2212）・分数線・根号の上線・= の 2 本**はどれも
+# 「細長い横棒」で、字の形だけでは区別できない（実測: 実写で `=` が sqrt 2 個、
+# マイナスが sqrt や frac になった）。見分けるのは**構造**の仕事。C++ の fix_bars と同じ規則。
+
+
+def bar_like(s):
+    return ((not s.atom) and s.cls in ("-", "frac", "sqrt", "=") and s.w() >= s.h() * 3)
+
+
+def fix_bars(v, h_ref):
+    # 1) 同じ棒が 2 つに割れて検出されたものをつなぐ（縦の位置がほぼ同じで、横が重なる）
+    i = 0
+    while i < len(v):
+        if not bar_like(v[i]):
+            i += 1
+            continue
+        j = i + 1
+        while j < len(v):
+            if not bar_like(v[j]):
+                j += 1
+                continue
+            dy = abs(v[i].cy() - v[j].cy())
+            ov = min(v[i].x1, v[j].x1) - max(v[i].x0, v[j].x0)
+            shorter = min(v[i].w(), v[j].w())
+            if dy * 100 <= max(4, h_ref * 12) and ov * 100 > shorter * 40:
+                v[i].x0 = min(v[i].x0, v[j].x0)
+                v[i].x1 = max(v[i].x1, v[j].x1)
+                v[i].y0 = min(v[i].y0, v[j].y0)
+                v[i].y1 = max(v[i].y1, v[j].y1)
+                del v[j]
+                continue
+            j += 1
+        i += 1
+    # 2) 同じ x に上下 2 本あって、**間に何も無く、長さもほぼ同じ**なら `=`
+    for i in range(len(v)):
+        if not bar_like(v[i]):
+            continue
+        done = False
+        for j in range(i + 1, len(v)):
+            if not bar_like(v[j]):
+                continue
+            ov = min(v[i].x1, v[j].x1) - max(v[i].x0, v[j].x0)
+            shorter = min(v[i].w(), v[j].w())
+            longer = max(v[i].w(), v[j].w())
+            dy = abs(v[i].cy() - v[j].cy())
+            lo, hi = max(v[i].x0, v[j].x0), min(v[i].x1, v[j].x1)
+            top, bot = min(v[i].cy(), v[j].cy()), max(v[i].cy(), v[j].cy())
+            between = any(lo <= v[k].cx() <= hi and top < v[k].cy() < bot
+                          for k in range(len(v)) if k not in (i, j))
+            if (ov * 100 > shorter * 60 and shorter * 100 >= longer * 70 and not between
+                    and dy > 0 and dy * 100 <= max(8, h_ref * 45)):
+                v[i].cls = "="
+                v[i].x0 = min(v[i].x0, v[j].x0)
+                v[i].x1 = max(v[i].x1, v[j].x1)
+                v[i].y0 = min(v[i].y0, v[j].y0)
+                v[i].y1 = max(v[i].y1, v[j].y1)
+                v[i].base_y = v[i].y1
+                del v[j]
+                done = True
+                break
+        if done:
+            continue
+    return v
+
+
 def make_atom(e, x0, y0, x1, y1, base_y):
     return Sym("@", x0, y0, x1, y1, base_y, True, e)
 
@@ -194,7 +261,9 @@ def collapse_one(v):
             ux0, uy0 = min(ux0, s.x0), min(uy0, s.y0)
             ux1, uy1 = max(ux1, s.x1), max(uy1, s.y1)
         if not up or not down:
-            raise Fail("分数の上か下が空です")
+            # **上か下に何も無い横棒はマイナス**（検出器には分数線と区別できない）
+            v[fi].cls = "-"
+            return True, v
         nu = parse_flat(up)
         de = parse_flat(down)
         fr = make_atom(mk_div(nu, de), ux0, uy0, ux1, uy1, bar.cy())
@@ -219,7 +288,9 @@ def collapse_one(v):
             ux0, uy0 = min(ux0, s.x0), min(uy0, s.y0)
             ux1, uy1 = max(ux1, s.x1), max(uy1, s.y1)
         if not inside:
-            raise Fail("根号の中身がありません")
+            # 根号の上線も細長い横棒なので、マイナスと取り違えられる
+            v[bi_c].cls = "-"
+            return True, v
         # 上線の**すぐ左にある**根号記号を 1 つだけ消す（2 つ並ぶと左を消してしまう）
         cand = -1
         for i, s in enumerate(rest):
@@ -345,6 +416,10 @@ def parse_flat(v_in):
     v = sorted((s.copy() for s in v_in), key=lambda s: s.x0)
     if not v:
         raise Fail("記号がありません")
+
+    # 0) 横棒を直す（= が 2 本の棒に、マイナスが分数線や根号の上線に化けるのを構造で戻す）
+    v = fix_bars(v, median_h(v))
+    v.sort(key=lambda s: s.x0)
 
     # 1) 構造を全部畳む（外側から内側へ）
     while True:
