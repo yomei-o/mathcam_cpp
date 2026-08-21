@@ -1,31 +1,38 @@
 <!doctype html>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>mathcam_cpp — 数式の写真を解く</title>
 <!--
   CLI と同じ 1 本の道を通す: 記号検出（自作 ONNX ランタイムを emcc でビルド）-> レイアウト解析
   -> CAS -> 解き方の手順。推論ライブラリは使っていない。
 
-  ローカルで見る:  python -m http.server -d . 8000   ->  http://127.0.0.1:8000/wasm/
+  実写のページには式が何本も載っているので、**読みたい式をドラッグで囲む**のが既定。
+  ページ全体を 640 に縮めると字が潰れて読めない（実測: 教科書 1 ページ丸ごとは全滅）。
+
+  ローカルで見る:  python -m http.server 8000   ->  http://127.0.0.1:8000/wasm/
 -->
 <style>
   :root { color-scheme: light dark; }
-  body { font: 14px/1.6 system-ui, sans-serif; margin: 0; padding: 16px 20px; }
+  body { font: 14px/1.6 system-ui, sans-serif; margin: 0; padding: 14px 18px 40px; }
   h1 { font-size: 18px; margin: 0 0 2px; }
-  .sub { opacity: .7; margin-bottom: 14px; }
-  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
-  .stage { position: relative; display: inline-block; max-width: 100%; }
+  .sub { opacity: .7; margin-bottom: 12px; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+  .stage { position: relative; display: inline-block; max-width: 100%; touch-action: none; }
   canvas { max-width: 100%; height: auto; display: block; border-radius: 6px; background: #fff; }
-  #boxes { position: absolute; left: 0; top: 0; pointer-events: none; }
-  .expr { font-size: 22px; font-weight: 600; margin: 10px 0 4px; }
+  #over { position: absolute; left: 0; top: 0; width: 100%; height: 100%; pointer-events: none; }
+  .expr { font-size: 22px; font-weight: 600; margin: 12px 0 2px; }
   .ans { font-size: 20px; color: #0a7; font-weight: 600; }
   ol { padding-left: 22px; }
   li { margin: 4px 0; }
   .rule { font-weight: 600; }
   .after { font-family: ui-monospace, monospace; opacity: .85; }
-  .note { opacity: .7; font-size: 13px; max-width: 76ch; }
+  .note { opacity: .75; font-size: 13px; max-width: 78ch; }
+  .syms { font-family: ui-monospace, monospace; font-size: 12px; opacity: .7; }
   button, select, label { font: inherit; }
-  button { padding: 5px 12px; border-radius: 6px; }
-  img.thumb { height: 34px; vertical-align: middle; background: #fff; border-radius: 4px; }
+  button { padding: 5px 11px; border-radius: 6px; }
+  button:disabled { opacity: .45; }
+  img.thumb { height: 32px; vertical-align: middle; background: #fff; border-radius: 4px; }
+  #status { opacity: .85; }
 </style>
 
 <h1>mathcam_cpp — 数式の写真を読んで、解き方まで出す</h1>
@@ -41,34 +48,41 @@
 <div class="row">
   <input type="file" id="file" accept="image/*" disabled>
   <button id="cam" disabled>カメラ</button>
-  <button id="shot" disabled>1 枚撮って読む</button>
-  <label><input type="checkbox" id="drawbox" checked> 検出した記号を囲む</label>
+  <button id="shot" disabled>1 枚撮る</button>
+  <button id="rot" disabled>90° 回す</button>
 </div>
 
-<div class="stage">
+<div class="row">
+  <button id="runSel" disabled>選んだ範囲を読む</button>
+  <button id="runAll" disabled>画像全体を読む</button>
+  <span class="note">写真は<b>式 1 本をドラッグで囲む</b>と読めます（ページ全体だと字が潰れます）</span>
+</div>
+
+<div class="stage" id="stage">
   <canvas id="view"></canvas>
-  <canvas id="boxes"></canvas>
+  <canvas id="over"></canvas>
 </div>
 <video id="video" playsinline muted style="display:none"></video>
 
 <div class="expr" id="expr"></div>
 <div class="ans" id="ans"></div>
 <ol id="steps"></ol>
+<div class="syms" id="syms"></div>
 
 <p class="note" id="foot">
   サンプルは<b>このリポジトリの組版器で描いたもの</b>（<code>mathcam render</code>）なので、
-  画像のライセンス問題がありません。検出器は同じ組版器で作った合成データ 20,000 枚で学習していて、
-  合成画像に対する端から端までの正解率は <b>92〜98%</b>（<code>mathcam e2e</code> の実測）。
-  <b>実写の写真はまだ苦手です</b>（学習データに透視・影・ぼけを入れていないため）。
-  1 枚あたり 3 秒ほどかかります（自作ランタイムを WASM で動かしているため）。
+  画像のライセンス問題がありません。検出器は同じ組版器で作った合成データだけで学習しています。
+  <b>実写の教科書はまだ苦手です</b>（学習データの書体とマイナスの字が実物と違うことを実測して、
+  作り直している最中です）。1 枚あたり 1〜3 秒（自作ランタイムを WASM で動かしているため）。
 </p>
 
 <script>
 const stamp = Date.now();                 // コードだけキャッシュ避け（モデルには付けない）
 const $ = (id) => document.getElementById(id);
-const view = $('view'), boxes = $('boxes');
-const vctx = view.getContext('2d'), bctx = boxes.getContext('2d');
-let worker = null, busy = false, last = null;
+const view = $('view'), over = $('over');
+const vctx = view.getContext('2d'), octx = over.getContext('2d');
+let worker = null, busy = false, img = null, rot = 0;
+let sel = null;                            // 選択範囲（view の画素座標）
 
 const SAMPLES = [
   ['samples/s1.png', '二次（因数分解できる）'],
@@ -77,7 +91,6 @@ const SAMPLES = [
   ['samples/s4.png', '二次（解の公式）'],
   ['samples/s5.png', '二次（係数つき）'],
 ];
-
 for (const [src, label] of SAMPLES) {
   const b = document.createElement('button');
   b.className = 'sample';
@@ -88,7 +101,7 @@ for (const [src, label] of SAMPLES) {
   $('samples').appendChild(b);
 }
 
-function setStatus(t) { $('status').textContent = t; }
+const setStatus = (t) => { $('status').textContent = t; };
 
 $('load').onclick = () => {
   if (!worker) {
@@ -97,8 +110,7 @@ $('load').onclick = () => {
       const m = ev.data;
       if (m.type === 'loaded') {
         setStatus('モデル読み込み完了（' + m.nodes + ' ノード, ' + (m.bytes / 1e6).toFixed(1) + ' MB）');
-        $('file').disabled = false;
-        $('cam').disabled = false;
+        for (const id of ['file', 'cam', 'rot']) $(id).disabled = false;
         document.querySelectorAll('.sample').forEach(b => b.disabled = false);
         return;
       }
@@ -111,48 +123,116 @@ $('load').onclick = () => {
 };
 
 function loadImage(src) {
-  const img = new Image();
-  img.onload = () => { last = img; run(); };
-  img.onerror = () => setStatus('画像を読めません: ' + src);
-  img.src = src;
+  const im = new Image();
+  im.onload = () => { img = im; rot = 0; sel = null; redraw(); run(null); };
+  im.onerror = () => setStatus('画像を読めません: ' + src);
+  im.src = src;
 }
 
-function run() {
-  if (!worker || busy || !last) return;
+// 画像を回転込みで view に描く。EXIF はブラウザが <img> の描画時に直すが、向きの情報が
+// 無い（または誤っている）写真もあるので手で回せるようにしておく。実測: 手元の 4 枚は
+// どれも EXIF に orientation 3/6 が入っていた。
+function redraw() {
+  if (!img) return;
+  const w = img.naturalWidth, h = img.naturalHeight;
+  const swap = rot % 180 !== 0;
+  view.width = over.width = swap ? h : w;
+  view.height = over.height = swap ? w : h;
+  vctx.setTransform(1, 0, 0, 1, 0, 0);
+  vctx.clearRect(0, 0, view.width, view.height);
+  vctx.translate(view.width / 2, view.height / 2);
+  vctx.rotate(rot * Math.PI / 180);
+  vctx.drawImage(img, -w / 2, -h / 2, w, h);
+  vctx.setTransform(1, 0, 0, 1, 0, 0);
+  octx.clearRect(0, 0, over.width, over.height);
+  $('runAll').disabled = false;
+  $('runSel').disabled = !sel;
+}
+
+$('rot').onclick = () => { rot = (rot + 90) % 360; sel = null; redraw(); };
+
+// ---- ドラッグで囲む（マウスとタッチの両方）
+function evPos(e) {
+  const r = view.getBoundingClientRect();
+  const p = e.touches && e.touches.length ? e.touches[0] : e;
+  return {
+    x: Math.max(0, Math.min(view.width, (p.clientX - r.left) * view.width / r.width)),
+    y: Math.max(0, Math.min(view.height, (p.clientY - r.top) * view.height / r.height)),
+  };
+}
+function drawSel() {
+  octx.clearRect(0, 0, over.width, over.height);
+  if (!sel) return;
+  octx.strokeStyle = '#ff4081';
+  octx.lineWidth = Math.max(2, view.width / 400);
+  octx.strokeRect(sel.x0, sel.y0, sel.x1 - sel.x0, sel.y1 - sel.y0);
+}
+let drag = null;
+const down = (e) => { if (!img) return; drag = evPos(e); sel = null; drawSel(); e.preventDefault(); };
+const move = (e) => {
+  if (!drag) return;
+  const p = evPos(e);
+  sel = {x0: Math.min(drag.x, p.x), y0: Math.min(drag.y, p.y),
+         x1: Math.max(drag.x, p.x), y1: Math.max(drag.y, p.y)};
+  drawSel();
+  e.preventDefault();
+};
+const up = () => {
+  if (!drag) return;
+  drag = null;
+  if (sel && ((sel.x1 - sel.x0) < 12 || (sel.y1 - sel.y0) < 8)) sel = null;   // 誤タップ
+  $('runSel').disabled = !sel;
+  if (sel) run(sel);
+};
+for (const [ev, fn] of [['mousedown', down], ['mousemove', move], ['mouseup', up],
+                        ['touchstart', down], ['touchmove', move], ['touchend', up]])
+  $('stage').addEventListener(ev, fn, {passive: false});
+
+$('runSel').onclick = () => sel && run(sel);
+$('runAll').onclick = () => run(null);
+
+function run(box) {
+  if (!worker || busy || !img) return;
   busy = true;
-  const w = last.naturalWidth || last.videoWidth;
-  const h = last.naturalHeight || last.videoHeight;
-  view.width = boxes.width = w;
-  view.height = boxes.height = h;
-  vctx.drawImage(last, 0, 0, w, h);
-  bctx.clearRect(0, 0, w, h);
+  const b = box || {x0: 0, y0: 0, x1: view.width, y1: view.height};
+  const x0 = Math.round(b.x0), y0 = Math.round(b.y0);
+  const w = Math.max(1, Math.round(b.x1 - b.x0)), h = Math.max(1, Math.round(b.y1 - b.y0));
   $('expr').textContent = '';
   $('ans').textContent = '';
   $('steps').innerHTML = '';
-  const rgba = vctx.getImageData(0, 0, w, h).data;
-  setStatus(w + 'x' + h + ' を読んでいます…（3 秒ほど）');
-  worker.postMessage({type: 'run', rgba, w, h, imgsz: 640, conf: 0.25}, [rgba.buffer]);
+  $('syms').textContent = '';
+  const rgba = vctx.getImageData(x0, y0, w, h).data;
+  setStatus(w + 'x' + h + ' を読んでいます…');
+  worker.postMessage({type: 'run', rgba, w, h, ox: x0, oy: y0, imgsz: 640, conf: 0.25},
+                     [rgba.buffer]);
 }
 
 function draw(m) {
   setStatus(m.count + ' 記号、' + (m.ms / 1000).toFixed(1) + ' 秒');
-  if ($('drawbox').checked && m.syms) {
-    bctx.clearRect(0, 0, boxes.width, boxes.height);
-    bctx.strokeStyle = '#00b0ff';
-    bctx.fillStyle = '#00b0ff';
-    bctx.lineWidth = 1.5;
-    bctx.font = '11px system-ui';
-    for (const s of m.syms) {
-      bctx.strokeRect(s.x0, s.y0, s.x1 - s.x0, s.y1 - s.y0);
-      bctx.fillText(s.cls, s.x0, Math.max(9, s.y0 - 2));
-    }
+  const ox = m.ox || 0, oy = m.oy || 0;
+  drawSel();                                        // 選択枠を描き直してから記号枠を重ねる
+  octx.strokeStyle = '#00b0ff';
+  octx.fillStyle = '#00b0ff';
+  octx.lineWidth = Math.max(1, view.width / 700);
+  const fs = Math.max(10, Math.round(view.width / 60));
+  octx.font = fs + 'px system-ui';
+  for (const s of (m.syms || [])) {
+    octx.strokeRect(ox + s.x0, oy + s.y0, s.x1 - s.x0, s.y1 - s.y0);
+    octx.fillText(s.cls, ox + s.x0, Math.max(fs, oy + s.y0 - 2));
   }
-  if (m.error) { $('expr').textContent = '読めませんでした: ' + m.error; return; }
+  $('syms').textContent = (m.syms || []).map(s => s.cls).join(' ');
+  if (m.error) {
+    $('expr').textContent = '式として読めませんでした: ' + m.error;
+    return;
+  }
   $('expr').textContent = m.expr || '';
   const ans = m.answer || [];
   if (m.kind === 'value') $('ans').textContent = '= ' + ans.join(', ');
   else if (m.kind === 'identity') $('ans').textContent = 'すべての値で成り立つ';
   else if (m.kind === 'contradiction') $('ans').textContent = '解なし（矛盾）';
+  else if (m.kind === 'inequality' || m.kind === 'all' || m.kind === 'empty' ||
+           m.kind === 'dependent' || m.kind === 'system')
+    $('ans').textContent = ans.join(',  ');
   else if (!ans.length) $('ans').textContent = '実数解なし';
   else $('ans').textContent = ans.map(a => (m.var || 'x') + ' = ' + a).join(',  ');
   for (const st of (m.steps || [])) {
@@ -170,16 +250,31 @@ $('file').onchange = (e) => {
 
 $('cam').onclick = async () => {
   try {
-    const s = await navigator.mediaDevices.getUserMedia({video: {width: 1280, height: 720}});
+    const s = await navigator.mediaDevices.getUserMedia(
+        {video: {facingMode: 'environment', width: {ideal: 1920}, height: {ideal: 1080}}});
     $('video').srcObject = s;
     await $('video').play();
     $('shot').disabled = false;
-    setStatus('カメラ待機中。「1 枚撮って読む」で 1 フレーム処理します');
+    setStatus('カメラ待機中。「1 枚撮る」で止めてから、式をドラッグで囲みます');
   } catch (e) { setStatus('カメラを開けません: ' + e.message); }
 };
 
 $('shot').onclick = () => {
   const v = $('video');
-  if (v.videoWidth) { last = v; run(); }
+  if (!v.videoWidth) return;
+  // 撮った 1 枚を画像として固定する（動画のままだと囲んでいる間に中身が動く）
+  const c = document.createElement('canvas');
+  c.width = v.videoWidth;
+  c.height = v.videoHeight;
+  c.getContext('2d').drawImage(v, 0, 0);
+  const im = new Image();
+  im.onload = () => {
+    img = im;
+    rot = 0;
+    sel = null;
+    redraw();
+    setStatus('式をドラッグで囲んでください');
+  };
+  im.src = c.toDataURL('image/png');
 };
 </script>

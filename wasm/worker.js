@@ -30,7 +30,7 @@ self.onmessage = async (ev) => {
     }
     if (msg.type === 'run') {
       if (!loaded) throw new Error('モデルがまだ読めていません');
-      const {rgba, w, h, imgsz, conf} = msg;
+      const {rgba, w, h, imgsz, conf, ox, oy} = msg;
       const p = M._malloc(rgba.length);
       M.HEAPU8.set(rgba, p);
       const t0 = performance.now();
@@ -41,7 +41,8 @@ self.onmessage = async (ev) => {
       M._free(p);
       const res = JSON.parse(M.UTF8ToString(M.ccall('mc_result', 'number', [], [])));
       if (n < 0) throw new Error(res.error || ('mc_run が ' + n + ' を返しました'));
-      self.postMessage({type: 'result', ...res, ms});
+      // ox/oy は切り出した位置。枠を元の写真の座標に戻すのに要る
+      self.postMessage({type: 'result', ...res, ms, ox: ox || 0, oy: oy || 0});
       return;
     }
   } catch (e) {
