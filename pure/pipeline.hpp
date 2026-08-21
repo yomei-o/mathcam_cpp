@@ -10,6 +10,7 @@
 #include "parse_layout.hpp"
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <vector>
 
 // 名前は pipeln。**pipe にすると Linux で壊れる**（POSIX の pipe() が
@@ -93,5 +94,91 @@ inline Detected detect_syms(const onx::Graph& g, const unsigned char* rgb, int w
   return out;
 }
 
+
+// ---------------------------------------------------------------- 行に切ってから検出する
+//
+// 実写のページを広く囲むと、640 に縮む段で字が小さくなって検出できない
+// （実測: 4 問ぶん 1140x350 を囲むと 0.56 倍になり、7 記号しか出なかった）。
+// **先にインクの横方向の射影で行に切り、行ごとに検出する**（各行が 640 に拡大されるので、
+// 字の大きさが学習時に近くなる）。行の切り出しはモデルを使わないので、検出器の出来に依らない。
+
+// インクのある行の帯を返す（y0,y1 の組）。padding は帯の上下に足す余白（px）。
+//
+// **閾値は行ごとに取る**（その行の中央値より暗い画素を数える）。1 枚に 1 つの閾値
+// （Otsu）にすると、光沢や影で明るさが場所ごとに違う写真では、暗い側の背景が全部
+// 「インク」になって行が分けられない（実測: 教科書のページで帯が 1 つになった）。
+inline std::vector<std::pair<int, int>> ink_bands(const unsigned char* rgb, int w, int h,
+                                                 int pad_px = 0) {
+  std::vector<unsigned char> gray((size_t)w * h);
+  for (size_t i = 0; i < gray.size(); ++i)
+    gray[i] = (unsigned char)((rgb[i * 3] * 30 + rgb[i * 3 + 1] * 59 + rgb[i * 3 + 2] * 11) / 100);
+  const int min_ink = std::max(3, w / 200);        // 幅に対する下限（ノイズを弾く）
+  std::vector<int> ink((size_t)h, 0);
+  std::vector<int> row(  (size_t)w, 0);
+  for (int y = 0; y < h; ++y) {
+    for (int x = 0; x < w; ++x) row[(size_t)x] = gray[(size_t)y * w + x];
+    std::vector<int> tmp = row;
+    std::nth_element(tmp.begin(), tmp.begin() + w / 2, tmp.end());
+    const int paper = tmp[(size_t)(w / 2)];        // その行の「紙の明るさ」
+    int c = 0;
+    for (int x = 0; x < w; ++x)
+      if (row[(size_t)x] < paper - 30) ++c;
+    ink[(size_t)y] = c;
+  }
+  std::vector<std::pair<int, int>> bands;
+  int y = 0;
+  while (y < h) {
+    while (y < h && ink[(size_t)y] <= min_ink) ++y;
+    if (y >= h) break;
+    const int s = y;
+    while (y < h && ink[(size_t)y] > min_ink) ++y;
+    bands.push_back({s, y});
+  }
+  if (bands.empty()) return bands;
+  // 近い帯はつなぐ。**つなぐ条件は「帯の高さの 1/4 より近い」**。半分にすると、
+  // 教科書の行間（字の高さ 45px に対して行の隙間 40px）でも全部つながって 1 行になった。
+  std::vector<int> hs;
+  for (const std::pair<int, int>& b : bands) hs.push_back(b.second - b.first);
+  std::sort(hs.begin(), hs.end());
+  const int med = std::max(1, hs[hs.size() / 2]);
+  std::vector<std::pair<int, int>> merged{bands[0]};
+  for (size_t i = 1; i < bands.size(); ++i) {
+    if (bands[i].first - merged.back().second <= std::max(2, med / 4))
+      merged.back().second = bands[i].second;
+    else merged.push_back(bands[i]);
+  }
+  // 高さが極端に小さい帯（罫線やノイズ）は捨てる
+  std::vector<std::pair<int, int>> out;
+  for (const std::pair<int, int>& b : merged) {
+    if (b.second - b.first < std::max(6, med / 3)) continue;
+    out.push_back({std::max(0, b.first - pad_px), std::min(h, b.second + pad_px)});
+  }
+  return out;
+}
+
+// 行ごとに検出して、元の座標に戻した記号を行ごとに返す
+inline std::vector<std::vector<pl::Sym>> detect_by_lines(const onx::Graph& g,
+                                                        const unsigned char* rgb, int w, int h,
+                                                        int imgsz, float conf, float nms,
+                                                        BoxFmt fmt) {
+  std::vector<std::vector<pl::Sym>> out;
+  const std::vector<std::pair<int, int>> bands = ink_bands(rgb, w, h, 4);
+  for (const std::pair<int, int>& b : bands) {
+    const int bh = b.second - b.first;
+    if (bh <= 0) continue;
+    std::vector<unsigned char> sub((size_t)w * bh * 3);
+    for (int y = 0; y < bh; ++y)
+      std::memcpy(&sub[(size_t)y * w * 3], rgb + ((size_t)(y + b.first) * w) * 3,
+                  (size_t)w * 3);
+    Detected d = detect_syms(g, sub.data(), w, bh, imgsz, conf, nms, fmt);
+    for (pl::Sym& s : d.syms) {
+      s.y0 += b.first;
+      s.y1 += b.first;
+      s.base_y += b.first;
+    }
+    if (!d.syms.empty()) out.push_back(d.syms);
+  }
+  return out;
+}
 
 }  // namespace pipeln

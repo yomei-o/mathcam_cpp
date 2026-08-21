@@ -570,6 +570,30 @@ static int cmd_photo(int argc, char** argv) {
     for (const std::string& line : slv::answer_lines(sol)) printf("%s%s\n", prefix, line.c_str());
   };
 
+  if (has_flag(argc, argv, "--show-bands")) {
+    const std::vector<std::pair<int, int>> bs = pipeln::ink_bands(px, w, h, 4);
+    printf("%zu 帯\n", bs.size());
+    for (size_t i = 0; i < bs.size(); ++i)
+      printf("  %zu: y %d..%d（高さ %d）\n", i + 1, bs[i].first, bs[i].second,
+             bs[i].second - bs[i].first);
+  }
+  if (has_flag(argc, argv, "--auto-lines")) {
+    // **インクの射影で行に切ってから、行ごとに検出する**（広く囲んでも字が縮まない）
+    const std::vector<std::vector<pl::Sym>> ls =
+        pipeln::detect_by_lines(g, px, w, h, imgsz, conf, nms, fmt);
+    printf("%zu 行（行ごとに検出）\n", ls.size());
+    for (size_t i = 0; i < ls.size(); ++i) {
+      printf("--- %zu 行目（%zu 記号）---\n", i + 1, ls[i].size());
+      if (show_syms) {
+        std::vector<pl::Sym> sorted2 = ls[i];
+        std::sort(sorted2.begin(), sorted2.end(), pl::by_x);
+        for (const pl::Sym& sm : sorted2)
+          printf("  %-5s (%d,%d)-(%d,%d)\n", sm.cls.c_str(), sm.x0, sm.y0, sm.x1, sm.y1);
+      }
+      show_one(pl::parse(ls[i]), "");
+    }
+    return 0;
+  }
   if (has_flag(argc, argv, "--lines")) {
     const std::vector<pl::Result> rs = pl::parse_lines(syms);
     printf("%zu 行\n", rs.size());
