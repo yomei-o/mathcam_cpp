@@ -264,6 +264,15 @@ static int cmd_dataset(int argc, char** argv) {
     const int paper = photo_like ? (int)(215 + rng.below(41)) : 255;   // 215..255
     const int ink = photo_like ? (int)(20 + rng.below(71)) : 0;        // 20..90
     const int blur = photo_like ? (int)rng.below(2) : 0;
+    // 写真に近づけるための劣化（**引く順番は Python 側と同じ**にする）。
+    // 紙の明暗ムラ・粒子・JPEG のにじみは実写に必ずあるもので、これが無いと学習が
+    // 「綺麗な絵」に合わせてしまう（実測: 学習が進むほど実写が悪くなった）。
+    const int grad = photo_like ? (int)rng.below(26) : 0;        // 端から端で 0..25 の明暗差
+    const int grad_dir = photo_like ? (int)rng.below(4) : 0;     // 左右・上下のどちら向きか
+    const int noise = photo_like ? (int)rng.below(9) : 0;        // 粒子の振れ幅 0..8
+    const uint64_t nseed = photo_like ? rng.next() : 0;          // 粒子の種
+    const int jpeg_q = photo_like ? (int)(55 + rng.below(38)) : 0;   // 55..92
+    const bool as_jpeg = photo_like && (int)rng.below(2) == 0;
     std::string err;
     ex::E e = ex::parse(src, &err);
     if (!err.empty()) { ++skipped; continue; }        // 生成器が壊れた式を出したら捨てる
@@ -273,14 +282,32 @@ static int cmd_dataset(int argc, char** argv) {
     st.paper = paper;
     st.ink = ink;
     st.blur = blur;
-    const ts::Rendered R =
+    ts::Rendered R =        // 紙のムラや粒子を足すので const にしない
         arith_mode ? ts::render_arith(font, st.italic_vars ? &font_i : nullptr, src, px, st)
                    : ts::render(font, st.italic_vars ? &font_i : nullptr, e, px, st);
     char stem[40];
     snprintf(stem, sizeof stem, "%s%06d", prefix.c_str(), made);
     if (!no_img) {
-      const std::string ip = dir + "/images/" + stem + ".png";
-      if (!stbi_write_png(ip.c_str(), R.w, R.h, 1, R.gray.data(), R.w)) {
+      // 紙の明暗ムラと粒子を足す（実写にはどちらもある）。ラベルは変わらない
+      if (photo_like && (grad > 0 || noise > 0)) {
+        Rng nr(nseed);
+        for (int y = 0; y < R.h; ++y)
+          for (int x = 0; x < R.w; ++x) {
+            const int t = grad_dir == 0   ? x * grad / std::max(1, R.w)
+                          : grad_dir == 1 ? (R.w - x) * grad / std::max(1, R.w)
+                          : grad_dir == 2 ? y * grad / std::max(1, R.h)
+                                          : (R.h - y) * grad / std::max(1, R.h);
+            const int n = noise ? (int)nr.below((uint64_t)(noise * 2 + 1)) - noise : 0;
+            int v = (int)R.gray[(size_t)y * R.w + x] - t + n;
+            R.gray[(size_t)y * R.w + x] = (unsigned char)std::max(0, std::min(255, v));
+          }
+      }
+      // **半分は JPEG で書く**（実写は必ず JPEG のにじみが乗っている）
+      const std::string ip = dir + "/images/" + stem + (as_jpeg ? ".jpg" : ".png");
+      const int okw = as_jpeg
+                          ? stbi_write_jpg(ip.c_str(), R.w, R.h, 1, R.gray.data(), jpeg_q)
+                          : stbi_write_png(ip.c_str(), R.w, R.h, 1, R.gray.data(), R.w);
+      if (!okw) {
         printf("cannot write %s\n", ip.c_str());
         return 1;
       }

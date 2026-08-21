@@ -31,6 +31,31 @@ CLASSES = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
            "times", "div", "dot", "brace_l", "brace_r"]
 
 
+def degrade(img, grad, grad_dir, noise, nseed):
+    """紙の明暗ムラと粒子を足す（実写にはどちらもある）。ラベルは変わらない。
+
+    画素は C++ 側と一致させない（ラスタライザが違うので元から一致しない）。合わせるのは
+    **枠**だけ（tools/parity/dataset.py がそれを見る）。
+    """
+    import genexpr as G
+    px = img.load()
+    w, h = img.width, img.height
+    nr = G.Rng(nseed)
+    for y in range(h):
+        for x in range(w):
+            if grad_dir == 0:
+                t = x * grad // max(1, w)
+            elif grad_dir == 1:
+                t = (w - x) * grad // max(1, w)
+            elif grad_dir == 2:
+                t = y * grad // max(1, h)
+            else:
+                t = (h - y) * grad // max(1, h)
+            n = (int(nr.below(noise * 2 + 1)) - noise) if noise else 0
+            px[x, y] = max(0, min(255, px[x, y] - t + n))
+    return img
+
+
 def build(out_dir, n, seed, px_min, px_max, font_path="", no_images=False,
           font_italic="", italic_pct=50, minus2212_pct=50, prefix="", photo_like=False,
           arith=False):
@@ -59,6 +84,13 @@ def build(out_dir, n, seed, px_min, px_max, font_path="", no_images=False,
         paper = int(215 + r.below(41)) if photo_like else 255
         ink = int(20 + r.below(71)) if photo_like else 0
         blur = int(r.below(2)) if photo_like else 0
+        # 写真に近づけるための劣化（**引く順番は C++ と同じ**）
+        grad = int(r.below(26)) if photo_like else 0       # 端から端で 0..25 の明暗差
+        grad_dir = int(r.below(4)) if photo_like else 0
+        noise = int(r.below(9)) if photo_like else 0       # 粒子の振れ幅 0..8
+        nseed = r.next() if photo_like else 0
+        jpeg_q = int(55 + r.below(38)) if photo_like else 0
+        as_jpeg = bool(photo_like and r.below(2) == 0)
         e, err = X.parse(src)
         if err:
             skipped += 1
@@ -74,7 +106,14 @@ def build(out_dir, n, seed, px_min, px_max, font_path="", no_images=False,
         else:
             img, boxes = (T.render_arith(f, src, px, fi_use, st) if arith
                           else T.render(f, e, px, fi_use, st))
-            img.save(os.path.join(out_dir, "images", stem + ".png"))
+            if photo_like and (grad > 0 or noise > 0):
+                img = degrade(img, grad, grad_dir, noise, nseed)
+            # **半分は JPEG で書く**（実写は必ず JPEG のにじみが乗っている）
+            name = stem + (".jpg" if as_jpeg else ".png")
+            if as_jpeg:
+                img.save(os.path.join(out_dir, "images", name), quality=jpeg_q)
+            else:
+                img.save(os.path.join(out_dir, "images", name))
             w, h = img.width, img.height
         with open(os.path.join(out_dir, "labels", stem + ".txt"), "w", encoding="utf-8") as fp:
             for cls, x0, y0, x1, y1 in boxes:

@@ -92,18 +92,30 @@ def main():
 
     rows = read_key(a.key)
     ok = 0
+    goods = []
     for img, crop, want in rows:
         path = os.path.join(a.dir, img)
         if not os.path.exists(path):
             print("[SKIP] %s が無い" % path)
+            goods.append(False)
             continue
         read, syms, _raw = run_cli(exe, path, crop, a.model, a.conf)
-        good = read and same(read, want)
+        good = bool(read) and same(read, want)
+        goods.append(good)
         ok += 1 if good else 0
         mark = "ok  " if good else "NG  "
         print("%s%-14s %-22s 期待 %-22s 読み %s" % (mark, img, crop, want, read or "(読めない)"))
         if a.show and not good:
             print("      記号列: %s" % " ".join(syms))
+    # **画像ごとの内訳も出す**（分母が違うモデル同士を比べるとき、全体だけ見ると誤読する）
+    per = {}
+    for img, _c, _w in rows:
+        per.setdefault(img, [0, 0])
+    for (img, crop, want), good in zip(rows, goods):
+        per[img][1] += 1
+        per[img][0] += 1 if good else 0
+    print("内訳: " + " / ".join("%s %d/%d" % (k.replace(".jpeg", ""), v[0], v[1])
+                                for k, v in sorted(per.items())))
     print("実写: %d / %d 正解（%.1f%%）、model=%s"
           % (ok, len(rows), 100.0 * ok / len(rows) if rows else 0.0, a.model))
     return 0
