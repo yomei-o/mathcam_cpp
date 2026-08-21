@@ -87,6 +87,7 @@ inline Detected detect_syms(const onx::Graph& g, const unsigned char* rgb, int w
     sm.x1 = (int)((d.x2 - padx) / sc);
     sm.y1 = (int)((d.y2 - pady) / sc);
     sm.base_y = sm.y1;
+    sm.score = d.score;
     if (sm.x1 <= sm.x0 || sm.y1 <= sm.y0) continue;
     out.syms.push_back(sm);
   }
@@ -156,11 +157,15 @@ inline std::vector<std::pair<int, int>> ink_bands(const unsigned char* rgb, int 
   return out;
 }
 
-// 行ごとに検出して、元の座標に戻した記号を行ごとに返す
+// 行ごとに検出して、元の座標に戻した記号を行ごとに返す。
+// out_bands を渡すと、返した行に対応する帯（y0,y1）も同じ順で入れる。**記号が 1 つも出なかった
+// 帯は返さない**ので、帯の一覧を別に取ると行と番号が合わなくなる（ブラウザの重ね描きで踏んだ）。
 inline std::vector<std::vector<pl::Sym>> detect_by_lines(const onx::Graph& g,
                                                         const unsigned char* rgb, int w, int h,
                                                         int imgsz, float conf, float nms,
-                                                        BoxFmt fmt) {
+                                                        BoxFmt fmt,
+                                                        std::vector<std::pair<int, int>>* out_bands
+                                                            = nullptr) {
   std::vector<std::vector<pl::Sym>> out;
   const std::vector<std::pair<int, int>> bands = ink_bands(rgb, w, h, 4);
   for (const std::pair<int, int>& b : bands) {
@@ -176,7 +181,10 @@ inline std::vector<std::vector<pl::Sym>> detect_by_lines(const onx::Graph& g,
       s.y1 += b.first;
       s.base_y += b.first;
     }
-    if (!d.syms.empty()) out.push_back(d.syms);
+    if (!d.syms.empty()) {
+      out.push_back(d.syms);
+      if (out_bands) out_bands->push_back(b);
+    }
   }
   return out;
 }

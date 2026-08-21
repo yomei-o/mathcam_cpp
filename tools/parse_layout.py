@@ -31,7 +31,7 @@ T_DIGIT_GAP = 40        # 桁をつなぐ隙間の上限（高さに対する %�
 
 
 class Sym:
-    __slots__ = ("cls", "x0", "y0", "x1", "y1", "base_y", "atom", "from_frac", "e")
+    __slots__ = ("cls", "x0", "y0", "x1", "y1", "base_y", "atom", "from_frac", "score", "e")
 
     def __init__(self, cls="", x0=0, y0=0, x1=0, y1=0, base_y=None, atom=False, e=None):
         self.cls = cls
@@ -40,6 +40,8 @@ class Sym:
         self.atom = atom
         # その原子が縦の分数だったか（帯分数 2 5/8 = 2 + 5/8 の判定に要る）
         self.from_frac = False
+        # 検出器の確からしさ（0..1）。式の読み方には使わない（表示と実験のため）
+        self.score = 0.0
         self.e = e
 
     def cx(self):
@@ -62,6 +64,7 @@ class Sym:
         """
         s = Sym(self.cls, self.x0, self.y0, self.x1, self.y1, self.base_y, self.atom, self.e)
         s.from_frac = self.from_frac
+        s.score = self.score
         return s
 
 

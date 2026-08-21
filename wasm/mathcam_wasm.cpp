@@ -17,6 +17,8 @@
 #include "solve.hpp"
 #include "arith.hpp"
 #include <emscripten/emscripten.h>
+#include <algorithm>
+#include <cstdio>
 #include <string>
 #include <vector>
 
@@ -91,6 +93,24 @@ static std::string one_json(const pl::Result& r, const std::vector<pl::Sym>* sym
   return js;
 }
 
+// 記号の枠を JSON の配列にする（"syms":[...] の中身。x 順に並べる）。
+// **確からしさも返す**（ブラウザで枠に出すと、どの記号が危ういのかがすぐ分かる）。
+static std::string syms_json(const std::vector<pl::Sym>& syms) {
+  std::vector<pl::Sym> sorted = syms;
+  std::sort(sorted.begin(), sorted.end(), pl::by_x);
+  std::string js = "[";
+  for (size_t i = 0; i < sorted.size(); ++i) {
+    const pl::Sym& s = sorted[i];
+    char sc[16];
+    std::snprintf(sc, sizeof(sc), "%.2f", (double)s.score);
+    js += (i ? ",{" : "{");
+    js += "\"cls\":\"" + esc(s.cls) + "\",\"x0\":" + std::to_string(s.x0) +
+          ",\"y0\":" + std::to_string(s.y0) + ",\"x1\":" + std::to_string(s.x1) +
+          ",\"y1\":" + std::to_string(s.y1) + ",\"score\":" + sc + "}";
+  }
+  return js + "]";
+}
+
 extern "C" {
 
 EMSCRIPTEN_KEEPALIVE int mc_load(const unsigned char* buf, int len) {
@@ -114,17 +134,8 @@ EMSCRIPTEN_KEEPALIVE int mc_run(const unsigned char* rgba, int w, int h, int img
       pipeln::detect_syms(g_graph, rgb.data(), w, h, imgsz > 0 ? imgsz : 640,
                           conf > 0.f ? conf : 0.25f, 0.45f, BoxFmt::CXCYWH);
 
-  std::string js = "{\"count\":" + std::to_string(det.syms.size()) + ",\"syms\":[";
-  std::vector<pl::Sym> sorted = det.syms;
-  std::sort(sorted.begin(), sorted.end(), pl::by_x);
-  for (size_t i = 0; i < sorted.size(); ++i) {
-    const pl::Sym& s = sorted[i];
-    js += (i ? ",{" : "{");
-    js += "\"cls\":\"" + esc(s.cls) + "\",\"x0\":" + std::to_string(s.x0) +
-          ",\"y0\":" + std::to_string(s.y0) + ",\"x1\":" + std::to_string(s.x1) +
-          ",\"y1\":" + std::to_string(s.y1) + "}";
-  }
-  js += "]";
+  std::string js = "{\"count\":" + std::to_string(det.syms.size()) +
+                   ",\"syms\":" + syms_json(det.syms);
 
   // 全体を 1 式として読んだ結果（今までと同じ形）。ページの一部を囲んだときは
   // **行ごとの結果**も返す（教科書は 1 問ずつ切るのが面倒なので）
@@ -136,6 +147,40 @@ EMSCRIPTEN_KEEPALIVE int mc_run(const unsigned char* rgba, int w, int h, int img
   js += "]}";
   g_result = js;
   return (int)det.syms.size();
+}
+
+// ページ 1 枚を**行ごとに**読む。CLI の photo --auto-lines と同じ道（pipeln::detect_by_lines）。
+//
+// 広い範囲をそのまま 640 に縮めると字が潰れて何も出ない（実測: 4 問ぶん 1140x350 を囲むと
+// 7 記号しか出なかった）。**先にインクの横方向の射影で行に切り、行ごとに検出する**と、
+// 各行が 640 に拡大されるので字の大きさが学習時に近くなる。
+EMSCRIPTEN_KEEPALIVE int mc_run_lines(const unsigned char* rgba, int w, int h, int imgsz,
+                                      float conf) {
+  if (!g_ok) { g_result = "{\"error\":\"model not loaded\"}"; return -1; }
+  if (w <= 0 || h <= 0) { g_result = "{\"error\":\"empty frame\"}"; return -1; }
+  std::vector<unsigned char> rgb((size_t)w * h * 3);
+  for (size_t i = 0; i < (size_t)w * h; ++i) {
+    rgb[i * 3] = rgba[i * 4];
+    rgb[i * 3 + 1] = rgba[i * 4 + 1];
+    rgb[i * 3 + 2] = rgba[i * 4 + 2];
+  }
+  std::vector<std::pair<int, int>> bands;
+  const std::vector<std::vector<pl::Sym>> lines =
+      pipeln::detect_by_lines(g_graph, rgb.data(), w, h, imgsz > 0 ? imgsz : 640,
+                              conf > 0.f ? conf : 0.25f, 0.45f, BoxFmt::CXCYWH, &bands);
+  int total = 0;
+  std::string js = "{\"mode\":\"lines\",\"lines\":[";
+  for (size_t i = 0; i < lines.size(); ++i) {
+    total += (int)lines[i].size();
+    js += (i ? ",{" : "{");
+    js += "\"band_y0\":" + std::to_string(bands[i].first) +
+          ",\"band_y1\":" + std::to_string(bands[i].second) +
+          ",\"syms\":" + syms_json(lines[i]) + ",";
+    js += one_json(pl::parse(lines[i]), &lines[i]) + "}";
+  }
+  js += "],\"count\":" + std::to_string(total) + "}";
+  g_result = js;
+  return total;
 }
 
 EMSCRIPTEN_KEEPALIVE const char* mc_result() { return g_result.c_str(); }

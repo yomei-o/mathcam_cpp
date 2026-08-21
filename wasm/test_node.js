@@ -94,6 +94,19 @@ function decodePng(buf) {
   for (const s of (res.steps || [])) console.log('  [' + s.rule + ']', s.note, '->', s.after);
   console.log('answer:', (res.answer || []).join(', '));
 
+  // **行に切る道も検査する**（ブラウザの「行を自動で切って全部読む」が通る道）。
+  // 入口が増えたのに検査が片方だけだと、片方だけ壊れていても気付けない。
+  p = M._malloc(rgba.length);
+  M.HEAPU8.set(rgba, p);
+  const nl = M.ccall('mc_run_lines', 'number', ['number', 'number', 'number', 'number', 'number'],
+                     [p, w, h, 640, 0.25]);
+  M._free(p);
+  const resl = JSON.parse(M.UTF8ToString(M.ccall('mc_result', 'number', [], [])));
+  console.log('lines :', (resl.lines || []).length, '行、記号', nl);
+  for (const l of (resl.lines || []))
+    console.log('  y', l.band_y0 + '..' + l.band_y1, l.expr || ('(読めない: ' + l.error + ')'),
+                '->', (l.answer || []).join(', '));
+
   if (!strict) return;
   const want_expr = 'x^2 - 5*x + 6 = 0';
   // 答えは人が読む文（slv::answer_lines が作る。CLI と同じ文言）
@@ -103,6 +116,9 @@ function decodePng(buf) {
   if (res.expr !== want_expr) bad.push('expr: ' + res.expr + ' != ' + want_expr);
   if (got_ans.join(',') !== want_ans.slice().sort().join(',')) bad.push('answer: ' + got_ans);
   if (!(res.steps || []).length) bad.push('手順が空');
+  const l0 = (resl.lines || [])[0] || {};
+  if ((resl.lines || []).length !== 1) bad.push('行の数: ' + (resl.lines || []).length + ' != 1');
+  if (l0.expr !== want_expr) bad.push('行の式: ' + l0.expr + ' != ' + want_expr);
   if (bad.length) { console.error('FAIL'); for (const b of bad) console.error(' ', b); process.exit(1); }
   console.log('OK');
 })().catch((e) => { console.error(e); process.exit(1); });
