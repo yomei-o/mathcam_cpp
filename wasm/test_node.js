@@ -72,7 +72,7 @@ function decodePng(buf) {
   const M = await require(path.join(__dirname, 'mathcam.js'))();
 
   // 第 2 引数でモデルを差し替えられる（出荷前に候補の重みでブラウザの道を通すため）
-  const modelPath = process.argv[3] || path.join(root, 'models', 'sym_det.onnx');
+  const modelPath = process.argv[3] || path.join(root, 'models', 'sym_det_v4.onnx');
   const model = fs.readFileSync(modelPath);
   let p = M._malloc(model.length);
   M.HEAPU8.set(model, p);
