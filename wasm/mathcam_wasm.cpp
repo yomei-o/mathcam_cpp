@@ -11,6 +11,8 @@
 //   * v8 の NMS はクラスごとなので、同じ字が別クラスで二重に残る。クラスを無視した
 //     重複除去も pipeline.hpp に入っている（"5" と "3" が重なって "53" と読まれた）。
 //   * 箱の形は export 依存。Ultralytics の素の export は cxcywh。
+//   * **答えの文言は slv::answer_lines だけが作る**（CLI と同じ関数）。ここで書き分けると
+//     ブラウザと CLI で言い方が違うアプリになる。
 #include "pipeline.hpp"
 #include "solve.hpp"
 #include <emscripten/emscripten.h>
@@ -29,6 +31,37 @@ static std::string esc(const std::string& s) {
     else o += c;
   }
   return o;
+}
+
+static std::string arr(const std::vector<std::string>& v) {
+  std::string s = "[";
+  for (size_t i = 0; i < v.size(); ++i) s += (i ? ",\"" : "\"") + esc(v[i]) + "\"";
+  return s + "]";
+}
+
+// 1 行ぶんの結果（式・手順・答え）を JSON の中身にする（{ } は付けない）
+static std::string one_json(const pl::Result& r) {
+  if (!r.ok) return "\"error\":\"" + esc(r.why) + "\"";
+  std::string js = "\"expr\":\"" + esc(r.text) + "\",\"latex\":\"" + esc(ex::to_latex(r.e)) + "\"";
+  const slv::Solution sol = slv::solve(r.e);
+  if (!sol.ok) {
+    // 方程式でなければ計算問題として値を出す
+    const ex::E v = ex::expand(r.e);
+    js += ",\"kind\":\"value\",\"answer\":[\"" + esc(ex::to_infix(v)) + "\"]";
+    js += ",\"answer_latex\":[\"" + esc(ex::to_latex(v)) + "\"]";
+    return js;
+  }
+  js += ",\"kind\":\"" + esc(sol.kind) + "\",\"var\":\"" + esc(sol.var) + "\",\"steps\":[";
+  for (size_t i = 0; i < sol.steps.size(); ++i) {
+    const slv::Step& st = sol.steps[i];
+    js += (i ? ",{" : "{");
+    js += "\"rule\":\"" + esc(st.rule) + "\",\"note\":\"" + esc(st.note) +
+          "\",\"after\":\"" + esc(ex::to_infix(st.after)) + "\",\"after_latex\":\"" +
+          esc(ex::to_latex(st.after)) + "\"}";
+  }
+  js += "],\"answer\":" + arr(slv::answer_lines(sol));
+  js += ",\"answer_latex\":" + arr(slv::answer_lines(sol, true));
+  return js;
 }
 
 extern "C" {
@@ -52,7 +85,7 @@ EMSCRIPTEN_KEEPALIVE int mc_run(const unsigned char* rgba, int w, int h, int img
   }
   const pipeln::Detected det =
       pipeln::detect_syms(g_graph, rgb.data(), w, h, imgsz > 0 ? imgsz : 640,
-                        conf > 0.f ? conf : 0.25f, 0.45f, BoxFmt::CXCYWH);
+                          conf > 0.f ? conf : 0.25f, 0.45f, BoxFmt::CXCYWH);
 
   std::string js = "{\"count\":" + std::to_string(det.syms.size()) + ",\"syms\":[";
   std::vector<pl::Sym> sorted = det.syms;
@@ -66,37 +99,12 @@ EMSCRIPTEN_KEEPALIVE int mc_run(const unsigned char* rgba, int w, int h, int img
   }
   js += "]";
 
-  const pl::Result r = pl::parse(det.syms);
-  if (!r.ok) {
-    js += ",\"error\":\"" + esc(r.why) + "\"}";
-    g_result = js;
-    return (int)det.syms.size();
-  }
-  js += ",\"expr\":\"" + esc(r.text) + "\",\"latex\":\"" + esc(ex::to_latex(r.e)) + "\"";
-
-  const slv::Solution sol = slv::solve(r.e);
-  if (!sol.ok) {
-    // 方程式でなければ計算問題として値を出す
-    const ex::E v = ex::expand(r.e);
-    js += ",\"answer\":[\"" + esc(ex::to_infix(v)) + "\"]";
-    js += ",\"answer_latex\":[\"" + esc(ex::to_latex(v)) + "\"],\"kind\":\"value\"}";
-    g_result = js;
-    return (int)det.syms.size();
-  }
-  js += ",\"kind\":\"" + esc(sol.kind) + "\",\"var\":\"" + esc(sol.var) + "\",\"steps\":[";
-  for (size_t i = 0; i < sol.steps.size(); ++i) {
-    const slv::Step& st = sol.steps[i];
-    js += (i ? ",{" : "{");
-    js += "\"rule\":\"" + esc(st.rule) + "\",\"note\":\"" + esc(st.note) +
-          "\",\"after\":\"" + esc(ex::to_infix(st.after)) + "\",\"after_latex\":\"" +
-          esc(ex::to_latex(st.after)) + "\"}";
-  }
-  js += "],\"answer\":[";
-  for (size_t i = 0; i < sol.roots.size(); ++i)
-    js += (i ? ",\"" : "\"") + esc(ex::to_infix(sol.roots[i])) + "\"";
-  js += "],\"answer_latex\":[";
-  for (size_t i = 0; i < sol.roots.size(); ++i)
-    js += (i ? ",\"" : "\"") + esc(ex::to_latex(sol.roots[i])) + "\"";
+  // 全体を 1 式として読んだ結果（今までと同じ形）。ページの一部を囲んだときは
+  // **行ごとの結果**も返す（教科書は 1 問ずつ切るのが面倒なので）
+  js += "," + one_json(pl::parse(det.syms));
+  const std::vector<pl::Result> lines = pl::parse_lines(det.syms);
+  js += ",\"lines\":[";
+  for (size_t i = 0; i < lines.size(); ++i) js += (i ? ",{" : "{") + one_json(lines[i]) + "}";
   js += "]}";
   g_result = js;
   return (int)det.syms.size();

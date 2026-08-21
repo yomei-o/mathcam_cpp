@@ -551,26 +551,37 @@ static int cmd_photo(int argc, char** argv) {
     for (const pl::Sym& sm : sorted)
       printf("  %-5s (%d,%d)-(%d,%d)\n", sm.cls.c_str(), sm.x0, sm.y0, sm.x1, sm.y1);
   }
-  const pl::Result r = pl::parse(syms);
-  if (!r.ok) { printf("レイアウト解析に失敗: %s\n", r.why.c_str()); return 1; }
-  printf("読めた式: %s\n", r.text.c_str());
+  // 1 式ずつ解いて出す。--lines を付けると囲んだ範囲の**行を全部**読む
+  // （教科書のページは 1 問ずつ切るのが面倒なので）
+  auto show_one = [&](const pl::Result& r, const char* prefix) {
+    if (!r.ok) { printf("%sレイアウト解析に失敗: %s\n", prefix, r.why.c_str()); return; }
+    printf("%s読めた式: %s\n", prefix, r.text.c_str());
+    const slv::Solution sol = slv::solve(r.e);
+    if (!sol.ok) {
+      // 方程式でなければ、値を計算して出す（計算問題として扱う）
+      printf("%s答え: %s\n", prefix, ex::to_infix(ex::expand(r.e)).c_str());
+      return;
+    }
+    if (steps)
+      for (size_t i = 0; i < sol.steps.size(); ++i)
+        printf("%s%zu. [%s] %s\n%s   %s\n", prefix, i + 1, sol.steps[i].rule.c_str(),
+               sol.steps[i].note.c_str(), prefix,
+               ex::to_infix(sol.steps[i].after).c_str());
+    for (const std::string& line : slv::answer_lines(sol)) printf("%s%s\n", prefix, line.c_str());
+  };
 
-  const slv::Solution sol = slv::solve(r.e);
-  if (!sol.ok) {
-    // 方程式でなければ、値を計算して出す（計算問題として扱う）
-    const ex::E v = ex::expand(r.e);
-    printf("答え: %s\n", ex::to_infix(v).c_str());
+  if (has_flag(argc, argv, "--lines")) {
+    const std::vector<pl::Result> rs = pl::parse_lines(syms);
+    printf("%zu 行\n", rs.size());
+    for (size_t i = 0; i < rs.size(); ++i) {
+      printf("--- %zu 行目 ---\n", i + 1);
+      show_one(rs[i], "");
+    }
     return 0;
   }
-  if (steps)
-    for (size_t i = 0; i < sol.steps.size(); ++i)
-      printf("%zu. [%s] %s\n   %s\n", i + 1, sol.steps[i].rule.c_str(),
-             sol.steps[i].note.c_str(), ex::to_infix(sol.steps[i].after).c_str());
-  if (sol.kind == "identity") { printf("すべての値で成り立つ\n"); return 0; }
-  if (sol.kind == "contradiction") { printf("解なし（矛盾）\n"); return 0; }
-  if (sol.roots.empty()) { printf("実数解なし\n"); return 0; }
-  for (const ex::E& rt : sol.roots)
-    printf("%s = %s\n", sol.var.c_str(), ex::to_infix(rt).c_str());
+  const pl::Result r = pl::parse(syms);
+  if (!r.ok) { printf("レイアウト解析に失敗: %s\n", r.why.c_str()); return 1; }
+  show_one(r, "");
   return 0;
 }
 

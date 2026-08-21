@@ -382,4 +382,45 @@ inline Result parse(const std::vector<Sym>& in) {
   return r;
 }
 
+// ---------------------------------------------------------------- 行に分ける
+//
+// 教科書のページは 1 問ずつ切るのが面倒なので、**囲った範囲に何行あっても読める**ようにする。
+//
+// 分け方は「y の区間を重なりで束ねる」だけ。上付きは親と縦に重なるので同じ行に残り、
+// 分数の分子・分母も横線と重なるので同じ行になる。別の問題の行との間には隙間があるので切れる。
+// ベースラインの近さで分けると、上付き（0.45em 持ち上がる）が別行になってしまう。
+inline std::vector<std::vector<Sym>> split_lines(const std::vector<Sym>& in) {
+  std::vector<std::vector<Sym>> out;
+  if (in.empty()) return out;
+  std::vector<size_t> idx(in.size());
+  for (size_t i = 0; i < idx.size(); ++i) idx[i] = i;
+  std::sort(idx.begin(), idx.end(),
+            [&](size_t a, size_t b) { return in[a].y0 < in[b].y0; });
+  std::vector<int> lo, hi;                            // 束ねた y の区間
+  std::vector<std::vector<Sym>> bands;
+  for (size_t k = 0; k < idx.size(); ++k) {
+    const Sym& s = in[idx[k]];
+    if (!bands.empty() && s.y0 <= hi.back()) {        // 前の帯と重なる -> 同じ行
+      hi.back() = std::max(hi.back(), s.y1);
+      bands.back().push_back(s);
+      continue;
+    }
+    lo.push_back(s.y0);
+    hi.push_back(s.y1);
+    bands.push_back({s});
+  }
+  for (std::vector<Sym>& b : bands) {
+    std::sort(b.begin(), b.end(), by_x);
+    out.push_back(b);
+  }
+  return out;
+}
+
+// 行ごとに解析する。**1 行も読めなくても空を返すだけ**（呼ぶ側が「読めなかった」を出す）
+inline std::vector<Result> parse_lines(const std::vector<Sym>& in) {
+  std::vector<Result> out;
+  for (const std::vector<Sym>& line : split_lines(in)) out.push_back(parse(line));
+  return out;
+}
+
 }  // namespace pl

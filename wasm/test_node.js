@@ -96,7 +96,8 @@ function decodePng(buf) {
 
   if (!strict) return;
   const want_expr = 'x^2 - 5*x + 6 = 0';
-  const want_ans = ['3', '2'];
+  // 答えは人が読む文（slv::answer_lines が作る。CLI と同じ文言）
+  const want_ans = ['x = 3', 'x = 2'];
   const got_ans = (res.answer || []).slice().sort();
   const bad = [];
   if (res.expr !== want_expr) bad.push('expr: ' + res.expr + ' != ' + want_expr);

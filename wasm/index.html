@@ -55,7 +55,8 @@
 <div class="row">
   <button id="runSel" disabled>選んだ範囲を読む</button>
   <button id="runAll" disabled>画像全体を読む</button>
-  <span class="note">写真は<b>式 1 本をドラッグで囲む</b>と読めます（ページ全体だと字が潰れます）</span>
+  <span class="note">写真は<b>式をドラッグで囲む</b>と読めます（ページ全体だと字が潰れます）。
+  数行まとめて囲めば、行ごとに答えを出します</span>
 </div>
 
 <div class="stage" id="stage">
@@ -225,16 +226,22 @@ function draw(m) {
     $('expr').textContent = '式として読めませんでした: ' + m.error;
     return;
   }
+  // 行が 2 本以上見つかったら、行ごとに式と答えを並べる（教科書の問題を数問まとめて囲める）
+  const lines = (m.lines || []).filter(l => l.expr);
+  if (lines.length > 1) {
+    $('expr').textContent = lines.length + ' 行';
+    const ul = $('steps');
+    for (const l of lines) {
+      const li = document.createElement('li');
+      li.innerHTML = '<b>' + l.expr + '</b>  →  <span class="after">' +
+                     (l.answer || []).join(',  ') + '</span>';
+      ul.appendChild(li);
+    }
+    return;
+  }
   $('expr').textContent = m.expr || '';
-  const ans = m.answer || [];
-  if (m.kind === 'value') $('ans').textContent = '= ' + ans.join(', ');
-  else if (m.kind === 'identity') $('ans').textContent = 'すべての値で成り立つ';
-  else if (m.kind === 'contradiction') $('ans').textContent = '解なし（矛盾）';
-  else if (m.kind === 'inequality' || m.kind === 'all' || m.kind === 'empty' ||
-           m.kind === 'dependent' || m.kind === 'system')
-    $('ans').textContent = ans.join(',  ');
-  else if (!ans.length) $('ans').textContent = '実数解なし';
-  else $('ans').textContent = ans.map(a => (m.var || 'x') + ' = ' + a).join(',  ');
+  // 答えの文言は C++ 側（slv::answer_lines）が作る。CLI と同じ文になる
+  $('ans').textContent = (m.answer || []).join(',  ');
   for (const st of (m.steps || [])) {
     const li = document.createElement('li');
     li.innerHTML = '<span class="rule">[' + st.rule + ']</span> ' + st.note +
