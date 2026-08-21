@@ -39,6 +39,8 @@ def main():
     ap.add_argument("--font", default="")
     ap.add_argument("--font-italic", dest="font_italic", default="")
     ap.add_argument("--italic", action="store_true")
+    ap.add_argument("--arith", action="store_true",
+                    help="小学校の計算（× ÷ 小数点 帯分数 中括弧）で測る")
     ap.add_argument("--exe", default="")
     ap.add_argument("--verbose", action="store_true")
     a = ap.parse_args()
@@ -65,11 +67,12 @@ def main():
     checked = 0
     tmp = os.path.join(tempfile.gettempdir(), "mathcam_layout_parity.txt")
     for _ in range(a.n):
-        src = G.one(rng)
+        src = G.arith(rng) if a.arith else G.one(rng)
         e, err = X.parse(src)
         if err:
             continue
-        _w, _h, boxes, _draw = T.layout_boxes(f, e, a.px, fi, st)
+        _w, _h, boxes, _draw = (T.layout_boxes_arith(f, src, a.px, fi, st) if a.arith
+                                else T.layout_boxes(f, e, a.px, fi, st))
         with open(tmp, "w", encoding="utf-8") as fp:
             fp.write("# %s\n" % src)
             for cls, x0, y0, x1, y1 in boxes:
@@ -93,9 +96,9 @@ def main():
         elif a.verbose:
             print("  ok  %-30s -> %s" % (src, text))
 
-    print("%d 件を突き合わせ（px=%d, font=%s%s）、不一致 %d 件、往復で戻らない %d 件"
+    print("%d 件を突き合わせ（px=%d, font=%s%s%s）、不一致 %d 件、往復で戻らない %d 件"
           % (checked, a.px, os.path.basename(f.path), "+italic" if a.italic else "",
-             diff, round_bad))
+             "+arith" if a.arith else "", diff, round_bad))
     return 1 if (diff or round_bad) else 0
 
 
