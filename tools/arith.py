@@ -138,10 +138,24 @@ class Result:
         self.value = None
 
 
+def calc_side(e):
+    """計算問題として計算する側を選ぶ。
+
+    プリントは `3.7 × (2 - 0.4) + 0.96 ÷ 1.2 = □` の形で、答えを書く四角がある。四角は
+    クラス表に無いので検出器が別の字として拾うことがある（`= 0` に見える）。両辺に文字が
+    無い等式なら、**左辺を計算する**のが人の意図に近い。
+    """
+    if e.k != X.REL:
+        return e
+    if X.collect_syms(e):
+        return e                                      # 文字が入っていれば方程式として扱う
+    return e.kids[0]
+
+
 def eval_steps(root, dec_ok=False, max_steps=40):
     """内側から 1 手ずつ畳む（C++ の ar::eval_steps と同じ順序・同じ文言）。"""
     r = Result()
-    cur = root
+    cur = calc_side(root)
     for _ in range(max_steps):
         if X.is_num(cur):
             r.ok = True

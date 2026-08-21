@@ -142,10 +142,24 @@ struct Result {
   ex::E value;
 };
 
-inline Result eval_steps(const ex::E& root, bool dec_ok = false, int max_steps = 40) {
+// 計算問題として計算する側を選ぶ。
+//
+// プリントは `3.7 × (2 - 0.4) + 0.96 ÷ 1.2 = □` の形で、答えを書く四角がある。四角は
+// クラス表に無いので、検出器は**別の字として拾うことがある**（`= 0` と読めてしまう）。
+// 両辺に文字が無い等式なら、**左辺を計算する**のが人の意図に近い（「= □ を埋める」問題）。
+inline ex::E calc_side(const ex::E& e) {
+  using namespace ex;
+  if (e->k != Kind::Rel) return e;
+  std::vector<std::string> syms;
+  collect_syms(e, syms);
+  if (!syms.empty()) return e;                       // 文字が入っていれば方程式として扱う
+  return e->kids[0];
+}
+
+inline Result eval_steps(const ex::E& root_in, bool dec_ok = false, int max_steps = 40) {
   using namespace ex;
   Result r;
-  E cur = root;
+  E cur = calc_side(root_in);
   for (int i = 0; i < max_steps; ++i) {
     if (is_num(cur)) { r.ok = true; r.value = cur; return r; }
     if (cur->k == Kind::Fn && cur->name == "op_neg" && is_num(cur->kids[0])) {

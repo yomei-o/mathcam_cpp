@@ -638,7 +638,15 @@ static int cmd_photo(int argc, char** argv) {
                       const std::vector<pl::Sym>* sy) {
     if (!r.ok) { printf("%sレイアウト解析に失敗: %s\n", prefix, r.why.c_str()); return; }
     printf("%s読めた式: %s\n", prefix, r.text.c_str());
-    const slv::Solution sol = slv::solve(r.e);
+    slv::Solution sol = slv::solve(r.e);
+    // **数だけの等式は計算問題として扱う**（プリントの「… = □」。四角が別の字として拾われて
+    // `= 0` に見えることがあり、そのまま解くと「解なし（矛盾）」になってしまう）
+    if (sol.ok && (sol.kind == "contradiction" || sol.kind == "identity") &&
+        r.e->k == ex::Kind::Rel) {
+      std::vector<std::string> sy2;
+      ex::collect_syms(r.e, sy2);
+      if (sy2.empty()) sol.ok = false;
+    }
     if (!sol.ok) {
       // 方程式でなければ、計算問題として 1 手ずつ計算する
       bool dec_ok = false;
@@ -649,7 +657,7 @@ static int cmd_photo(int argc, char** argv) {
                  ares.steps[i].note.c_str(), prefix, ares.steps[i].after.c_str());
       printf("%s答え: %s\n", prefix,
              ares.ok ? ar::to_text(ares.value, dec_ok).c_str()
-                     : ex::to_infix(ex::expand(r.e)).c_str());
+                     : ex::to_infix(ex::expand(ar::calc_side(r.e))).c_str());
       return;
     }
     if (steps)

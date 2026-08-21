@@ -181,6 +181,10 @@ def main():
     print("読めた式: %s" % text)
 
     sol = S.solve(e)
+    # **数だけの等式は計算問題として扱う**（プリントの「… = □」。四角が別の字として拾われて
+    # `= 0` に見えることがあり、そのまま解くと「解なし（矛盾）」になってしまう）
+    if sol.ok and sol.kind in ("contradiction", "identity") and e.k == X.REL             and not X.collect_syms(e):
+        sol.ok = False
     if not sol.ok:
         # 方程式でなければ計算問題として、小学校の順序で 1 手ずつ計算する
         dec_ok = any(s.cls == "dot" for s in syms)
@@ -193,7 +197,7 @@ def main():
                     print("   %s" % st.after)
             print("答え: %s" % AR.to_text(ares.value, dec_ok))
             return 0
-        v = X.expand(e)
+        v = X.expand(AR.calc_side(e))
         print("答え: %s" % X.to_infix(v))
         if X.is_num(v) and not v.num.is_int():
             dec = X.to_decimal(v.num)
