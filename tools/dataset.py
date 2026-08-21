@@ -21,10 +21,14 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
 # クラスの並びは固定（学習と推論で番号がずれないように）。C++ 側の kClasses と同じ順序。
+# **pure/classes.hpp と同じ並び。** ここが食い違うと、絵にはあるのにラベルが無いデータが
+# できて、学習は「その字は無視しろ」を覚える（実際に 24,200 枚作ってしまった）。
+# tools/parity/dataset.py が並びの一致も見る。
 CLASSES = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
            "+", "-", "=", "(", ")", "sqrt", "frac",
            "x", "y", "t", "a", "b", "c", "n",
-           "s", "i", "o", "l", "e", "g", "p", "q", "r", "t2"]
+           "s", "i", "o", "l", "e", "g", "p", "q", "r", "t2",
+           "times", "div", "dot", "brace_l", "brace_r"]
 
 
 def build(out_dir, n, seed, px_min, px_max, font_path="", no_images=False,
@@ -43,7 +47,7 @@ def build(out_dir, n, seed, px_min, px_max, font_path="", no_images=False,
         fp.write("\n".join(CLASSES) + "\n")
 
     r = G.Rng(seed)
-    made = skipped = 0
+    made = skipped = dropped = 0
     ex_lines = []
     for _ in range(n):
         # 乱数を引く順番は C++ と 1 対 1（順序が違うと同じ種でも別のデータになる）
@@ -75,7 +79,8 @@ def build(out_dir, n, seed, px_min, px_max, font_path="", no_images=False,
         with open(os.path.join(out_dir, "labels", stem + ".txt"), "w", encoding="utf-8") as fp:
             for cls, x0, y0, x1, y1 in boxes:
                 if cls not in CLASSES:
-                    continue                            # クラス表に無い記号は落とす
+                    dropped += 1                        # 黙って落とさず数える
+                    continue
                 cid = CLASSES.index(cls)
                 fp.write("%d %.6f %.6f %.6f %.6f\n"
                          % (cid, (x0 + x1) / 2 / w, (y0 + y1) / 2 / h,
@@ -84,6 +89,9 @@ def build(out_dir, n, seed, px_min, px_max, font_path="", no_images=False,
         made += 1
     with open(os.path.join(out_dir, "exprs.txt"), "w", encoding="utf-8") as fp:
         fp.write("\n".join(ex_lines) + ("\n" if ex_lines else ""))
+    if dropped:
+        print("**クラス表に無い記号を %d 個落とした**（classes.hpp に足すか、描き方を直す）"
+              % dropped)
     return made, skipped, f
 
 

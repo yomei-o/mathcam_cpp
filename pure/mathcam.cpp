@@ -218,17 +218,16 @@ static int cmd_dataset(int argc, char** argv) {
   make_dir(dir + "/images");
   make_dir(dir + "/labels");
   FILE* ex = fopen((dir + "/exprs.txt").c_str(), "wb");
-  // クラスの並びは固定しておく（学習と推論で番号がずれないように）
-  static const char* kClasses[] = {"0","1","2","3","4","5","6","7","8","9",
-                                   "+","-","=","(",")","sqrt","frac",
-                                   "x","y","t","a","b","c","n",
-                                   "s","i","o","l","e","g","p","q","r","t2"};
+  // **クラス表は pure/classes.hpp だけ。** ここに写しを置いていたせいで、クラスを足しても
+  // データセットのラベルからは落ちていた（× ÷ を描いた画像に、その枠が無いデータが 24,200 枚
+  // できた。学習すれば「その字は無視しろ」と教えることになる）。
+  const std::vector<std::string>& kClasses = cls::all();
   FILE* cf = fopen((dir + "/classes.txt").c_str(), "wb");
-  for (const char* c : kClasses) fprintf(cf, "%s\n", c);
+  for (const std::string& c : kClasses) fprintf(cf, "%s\n", c.c_str());
   fclose(cf);
 
   Rng rng(seed);
-  int made = 0, skipped = 0;
+  int made = 0, skipped = 0, dropped = 0;
   for (int i = 0; i < n; ++i) {
     // 乱数を使う順番は**固定**する（1 つの式の中で 2 回呼ぶと C++ の評価順が不定になり、
     // Python 側と食い違う。この落とし穴は前に踏んで RESUME に書いてある）
@@ -264,10 +263,10 @@ static int cmd_dataset(int argc, char** argv) {
     // YOLO 形式（クラス番号と、中心・幅・高さを 0..1 に正規化）
     FILE* lf = fopen((dir + "/labels/" + stem + ".txt").c_str(), "wb");
     for (size_t k = 0; k < R.cls.size(); ++k) {
-      int id = -1;
-      for (int c = 0; c < (int)(sizeof kClasses / sizeof kClasses[0]); ++c)
-        if (R.cls[k] == kClasses[c]) { id = c; break; }
-      if (id < 0) continue;                            // クラス表に無い記号は落とす
+      const int id = cls::id_of(R.cls[k]);
+      // **落とした記号は数えて最後に出す。** 黙って落とすと「絵にはあるのにラベルが無い」
+      // データができ、学習は「その字は無視しろ」を覚える（実際に 24,200 枚作ってしまった）
+      if (id < 0) { ++dropped; continue; }
       const double x0 = R.box[k * 4], y0 = R.box[k * 4 + 1];
       const double x1 = R.box[k * 4 + 2], y1 = R.box[k * 4 + 3];
       fprintf(lf, "%d %.6f %.6f %.6f %.6f\n", id, (x0 + x1) / 2 / R.w, (y0 + y1) / 2 / R.h,
@@ -278,6 +277,9 @@ static int cmd_dataset(int argc, char** argv) {
     ++made;
   }
   if (ex) fclose(ex);
+  if (dropped)
+    printf("**クラス表に無い記号を %d 個落とした**（classes.hpp に足すか、描き方を直す）\n",
+           dropped);
   printf("%s に %d 件（捨てた式 %d 件、px %d..%d、font upem %d）\n", dir.c_str(), made,
          skipped, px_min, px_max, font.upem);
   return 0;
