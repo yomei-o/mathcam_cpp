@@ -355,6 +355,29 @@ def to_rat(t):
     return X.Rat(int(ip or "0") * den + int(fp or "0"), den)
 
 
+def fix_ones(v, h_ref):
+    """縦棒だけの `1` を `l` と取り違えるのを直す（C++ の fix_ones と同じ規則）。
+
+    教科書の書体の `1` は旗も台も無い縦棒で、検出器から見ると `l` と同じ（実測: 実写の
+    `103 × 12 - 36` が `6*l - 36` になった）。**右隣が数字で桁としてくっつく間隔なら `1`**。
+    左隣だけが数字のときは変えない（`3l` は「3 掛ける l」）。
+    """
+    for i in range(len(v) - 1):
+        if v[i].atom or v[i].cls != "l":
+            continue
+        nx = v[i + 1]
+        if nx.atom or not (len(nx.cls) == 1 and nx.cls.isdigit()):
+            continue
+        h = max(v[i].h(), nx.h())
+        gap = nx.x0 - v[i].x1
+        same_line = abs(v[i].cy() - nx.cy()) * 100 <= h * T_SAME_LINE
+        same_size = abs(v[i].h() - nx.h()) * 100 <= h * 25
+        # 隙間の上限は桁つなぎ（40%）より緩くする。教科書は字間が広く、実測で 41% だった
+        if same_line and same_size and gap * 100 <= h * 55:
+            v[i].cls = "1"
+    return v
+
+
 def merge_digits(v):
     """隣り合う桁をまとめる（同じ行にあって、隙間が狭いものだけ）。"""
     i = 0
@@ -508,6 +531,8 @@ def parse_flat(v_in):
             break
 
     # 2) 桁をまとめる
+    # 桁をまとめる前に、縦棒だけの `1` が `l` になっているのを戻す
+    v = fix_ones(v, median_h(v))
     v = merge_digits(list(v))
 
     # 3) = で割る。**右が空なら左だけの式として扱う**（プリントの「… = □」の形。

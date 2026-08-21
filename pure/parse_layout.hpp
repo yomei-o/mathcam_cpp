@@ -382,6 +382,28 @@ inline bool is_dot_cls(const Sym& s) { return !s.atom && s.cls == "dot"; }
 // 隣り合う桁をまとめる（同じ行にあって、隙間が狭いものだけ）。
 // **小数点も桁として扱う**（3 . 7 -> "3.7"）。点は行の下にあるので、同じ行かの判定は
 // 中心ではなく「下端が近いか」で見る。
+// **縦棒だけの `1` を `l` と取り違えるのを直す。**
+//
+// 教科書の書体の `1` は旗も台も無い縦棒で、検出器から見ると小文字の `l` と同じ
+// （実測: 実写の `103 × 12 - 36` が `6*l - 36` になった）。区別は並びでつける:
+// **右隣が数字で、桁としてくっつく間隔なら `1`**。左隣だけが数字のときは変えない
+// （`3l` は「3 掛ける l」で、変数の l はそこに出る）。この非対称が肝で、これなら合成データの
+// `3l + 5` を壊さない。
+inline void fix_ones(std::vector<Sym>& v, int h_ref) {
+  for (size_t i = 0; i + 1 < v.size(); ++i) {
+    if (v[i].atom || v[i].cls != "l") continue;
+    const Sym& nx = v[i + 1];
+    if (nx.atom || !(nx.cls.size() == 1 && nx.cls[0] >= '0' && nx.cls[0] <= '9')) continue;
+    const int h = std::max(v[i].h(), nx.h());
+    const int gap = nx.x0 - v[i].x1;
+    const bool same_line = std::abs(v[i].cy() - nx.cy()) * 100 <= h * T_SAME_LINE;
+    const bool same_size = std::abs(v[i].h() - nx.h()) * 100 <= h * 25;
+    // 隙間の上限は桁つなぎ（40%）より緩くする。教科書は字間が広く、実測で 41% だった
+    if (same_line && same_size && gap * 100 <= h * 55) v[i].cls = "1";
+    (void)h_ref;
+  }
+}
+
 inline void merge_digits(std::vector<Sym>& v) {
   for (size_t i = 0; i + 1 < v.size();) {
     // 数 . 数 の並びを 1 つにする（点は小さいので大きさの条件を通らない。先に処理する）
@@ -554,7 +576,8 @@ inline ex::E parse_flat(std::vector<Sym> v, std::string* why) {
   }
   if (!why->empty()) return num(Rat(0));
 
-  // 2) 桁をまとめる
+  // 2) 桁をまとめる（その前に、縦棒だけの `1` が `l` になっているのを戻す）
+  fix_ones(v, median_h(v));
   merge_digits(v);
 
   // 3) = で割る。**右が空なら左だけの式として扱う**（プリントの「… = □」の形。
