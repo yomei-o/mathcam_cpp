@@ -20,7 +20,9 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
 # 種類の順序は C++ の enum Kind と同じ。cmp がこの並びに依存する
-NUM, SYM, ADD, MUL, POW, FN, EQ = range(7)
+# Rel は関係式（= < <= > >=）で、演算子は name に入れる（C++ の Kind::Rel と同じ）。
+# Sys は連立（関係式の列、書かれた順のまま）。
+NUM, SYM, ADD, MUL, POW, FN, REL, SYS = range(8)
 
 
 class Rat:
@@ -377,8 +379,10 @@ def simp(e):
         return pow_e(e.kids[0], e.kids[1])
     if e.k == FN:
         return fn_e(e.name, list(e.kids))
-    if e.k == EQ:
-        return raw(EQ, [simp(e.kids[0]), simp(e.kids[1])])
+    if e.k == REL:
+        return raw(REL, [simp(e.kids[0]), simp(e.kids[1])], e.name)
+    if e.k == SYS:
+        return raw(SYS, [simp(c) for c in e.kids])
     return e
 
 
@@ -402,8 +406,33 @@ def neg(a):
     return mul_n([num(-1), a])
 
 
+def rel(op, a, b):
+    """関係式。op は "=" "<" "<=" ">" ">=" のどれか。"""
+    return raw(REL, [simp(a), simp(b)], op)
+
+
 def eq(a, b):
-    return raw(EQ, [simp(a), simp(b)])
+    return rel("=", a, b)
+
+
+def is_rel(e):
+    return e.k == REL
+
+
+def is_eq(e):
+    return e.k == REL and e.name == "="
+
+
+def flip_op(op):
+    """不等号の向きを裏返す。負の数を両辺にかける／割るときに必ず要る。"""
+    return {"<": ">", "<=": ">=", ">": "<", ">=": "<="}.get(op, op)
+
+
+def sys_of(rels):
+    """連立。1 本だけなら包まない（包むと印字が変わる）。"""
+    if len(rels) == 1:
+        return simp(rels[0])
+    return raw(SYS, [simp(c) for c in rels])
 
 
 # ---------------------------------------------------------------- 展開
@@ -432,8 +461,10 @@ def expand(e):
         return pow_e(b, p)
     if e.k == FN:
         return fn_e(e.name, [expand(c) for c in e.kids])
-    if e.k == EQ:
-        return raw(EQ, [expand(e.kids[0]), expand(e.kids[1])])
+    if e.k == REL:
+        return raw(REL, [expand(e.kids[0]), expand(e.kids[1])], e.name)
+    if e.k == SYS:
+        return raw(SYS, [expand(c) for c in e.kids])
     return e
 
 
@@ -486,7 +517,7 @@ def split_num_den(e):
 
 
 def prec(e):
-    return {EQ: 0, ADD: 1, MUL: 2, POW: 3}.get(e.k, 4)
+    return {SYS: -1, REL: 0, ADD: 1, MUL: 2, POW: 3}.get(e.k, 4)
 
 
 def _wrap(e, p):
@@ -550,8 +581,11 @@ def to_infix(e):
         return _wrap(b, 4) + "^" + ps
     if e.k == FN:
         return e.name + "(" + ", ".join(to_infix(c) for c in e.kids) + ")"
-    if e.k == EQ:
-        return to_infix(e.kids[0]) + " = " + to_infix(e.kids[1])
+    if e.k == REL:
+        return to_infix(e.kids[0]) + " " + e.name + " " + to_infix(e.kids[1])
+    if e.k == SYS:
+        # 連立は ", " で並べる（この形をパーサが読み戻せる = 往復不変が Sys でも成り立つ）
+        return ", ".join(to_infix(c) for c in e.kids)
     return "?"
 
 
@@ -604,8 +638,11 @@ def to_latex(e):
         return bs + "^{" + to_latex(p) + "}"
     if e.k == FN:
         return "\\" + e.name + "(" + ", ".join(to_latex(c) for c in e.kids) + ")"
-    if e.k == EQ:
-        return to_latex(e.kids[0]) + " = " + to_latex(e.kids[1])
+    if e.k == REL:
+        op = {"<=": "\\le", ">=": "\\ge"}.get(e.name, e.name)
+        return to_latex(e.kids[0]) + " " + op + " " + to_latex(e.kids[1])
+    if e.k == SYS:
+        return "\\begin{cases} " + " \\\\ ".join(to_latex(c) for c in e.kids) + " \\end{cases}"
     return "?"
 
 
@@ -637,16 +674,33 @@ class Parser:
         return self.i < len(self.s) and self.s[self.i] == c
 
     def parse_all(self):
-        e = self.parse_eq()
+        rels = [self.parse_rel()]
+        while True:
+            self.ws()
+            if self.peek(",") or self.peek(";"):        # 連立は "," か ";" で区切る
+                if not self.eat(","):
+                    self.eat(";")
+                rels.append(self.parse_rel())
+                continue
+            break
         self.ws()
         if self.i < len(self.s) and not self.err:
             self.err = "余分な文字: " + self.s[self.i:]
-        return e
+        if len(rels) == 1:
+            return rels[0]
+        return raw(SYS, rels)
 
-    def parse_eq(self):
+    def parse_rel(self):
+        """関係演算子は 1 段だけ（a < b < c の連鎖は受けない。中学の書き方に無い）。"""
         l = self.parse_add()
-        if self.eat("="):
-            return raw(EQ, [l, self.parse_add()])
+        self.ws()
+        if self.i + 1 < len(self.s) and self.s[self.i] in "<>" and self.s[self.i + 1] == "=":
+            op = self.s[self.i] + "="
+            self.i += 2
+            return raw(REL, [l, self.parse_add()], op)
+        for op in ("<", ">", "="):
+            if self.eat(op):
+                return raw(REL, [l, self.parse_add()], op)
         return l
 
     def parse_add(self):
@@ -755,6 +809,15 @@ def collect_syms(e, out=None):
     return out
 
 
+def subst(e, var, val):
+    """変数を式で置き換える（代入法・連立の後半・将来の微分の合成に使う）。"""
+    if e.k == SYM:
+        return val if e.name == var else e
+    if not e.kids:
+        return e
+    return simp(raw(e.k, [subst(c, var, val) for c in e.kids], e.name))
+
+
 def approx(e):
     """数値評価。表示の最後だけで使う（厳密に閉じない sqrt など）。"""
     if e.k == NUM:
@@ -774,9 +837,9 @@ def approx(e):
         a = approx(e.kids[0]) if e.kids else 0.0
         return {"sin": math.sin, "cos": math.cos, "tan": math.tan, "ln": math.log,
                 "exp": math.exp, "abs": abs}.get(e.name, lambda x: x)(a)
-    if e.k == EQ:
+    if e.k == REL:
         return approx(e.kids[0]) - approx(e.kids[1])
-    return 0.0
+    return 0.0                                     # 連立に数値はない（呼ぶ側で弾く）
 
 
 def main():

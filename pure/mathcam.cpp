@@ -59,6 +59,15 @@ static bool has_flag(int argc, char** argv, const std::string& key) {
   return false;
 }
 
+// 実写に寄せた描き方の指定を作る。--italic は変数をイタリックに、--minus 2212 は
+// 教科書のマイナス（長い横棒）にする。既定は今までと同じ絵（測った数字と比べられるように）。
+static ts::Style style_of(int argc, char** argv) {
+  ts::Style st;
+  st.italic_vars = has_flag(argc, argv, "--italic");
+  st.minus_cp = arg_of(argc, argv, "--minus", "hyphen") == "2212" ? 0x2212 : '-';
+  return st;
+}
+
 // mathcam eval — 式を 1 つ読み、正規形・LaTeX・数値を出す。
 // 数値は「厳密に閉じない式のとき」だけ意味があるので、有理数で閉じたときは出さない
 // （0.6666666667 を見せると、厳密に 2/3 を保っている設計が伝わらない）。
@@ -82,15 +91,19 @@ static int cmd_eval(int argc, char** argv) {
   return 0;
 }
 
-// mathcam solve — 方程式を解く。--steps で「人が紙に書く手」を並べる。
+// mathcam solve — 方程式・不等式・連立を解く。--steps で「人が紙に書く手」を並べる。
 // 正規化（同類項をまとめる・約分）は手順に出さない。出すと人には読めないものになる。
+// 連立は "," か ";" で区切る（1 つの --expr にまとめて渡す）。
 static int cmd_solve(int argc, char** argv) {
   const std::string src = arg_of(argc, argv, "--expr", "");
   const std::string var = arg_of(argc, argv, "--var", "");
   const bool steps = has_flag(argc, argv, "--steps");
   const bool latex = has_flag(argc, argv, "--latex");
   if (src.empty()) {
-    printf("usage: mathcam solve --expr \"x^2 - 5x + 6 = 0\" [--var x] [--steps] [--latex]\n");
+    printf("usage: mathcam solve --expr \"x^2 - 5x + 6 = 0\" [--var x] [--steps] [--latex]\n"
+           "       mathcam solve --expr \"3x - 5 > 1\" --steps            (不等式)\n"
+           "       mathcam solve --expr \"x + y = 5, 2x - y = 1\" --steps (連立方程式)\n"
+           "       mathcam solve --expr \"2x > 4, x - 1 <= 4\" --steps    (連立不等式)\n");
     return 1;
   }
   std::string why;
@@ -107,11 +120,8 @@ static int cmd_solve(int argc, char** argv) {
       printf("   %s\n", show(st.after).c_str());
     }
   }
-  if (s.kind == "identity") { printf("すべての値で成り立つ\n"); return 0; }
-  if (s.kind == "contradiction") { printf("解なし（矛盾）\n"); return 0; }
-  if (s.roots.empty()) { printf("実数解なし\n"); return 0; }
-  for (size_t i = 0; i < s.roots.size(); ++i)
-    printf("%s = %s\n", s.var.c_str(), show(s.roots[i]).c_str());
+  // 答えの文言は slv::answer_lines の 1 か所だけ（Python 側も同じ関数の鏡を通る）
+  for (const std::string& line : slv::answer_lines(s, latex)) printf("%s\n", line.c_str());
   return 0;
 }
 
@@ -123,19 +133,23 @@ static int cmd_render(int argc, char** argv) {
   const std::string out = arg_of(argc, argv, "--out", "");
   const std::string labels = arg_of(argc, argv, "--labels", "");
   const std::string fontp = arg_of(argc, argv, "--font", "");
+  const std::string fontip = arg_of(argc, argv, "--font-italic", "");
   const int px = std::atoi(arg_of(argc, argv, "--px", "48").c_str());
+  const ts::Style st = style_of(argc, argv);
   if (src.empty() || (out.empty() && labels.empty())) {
     printf("usage: mathcam render --expr \"1/2 x = 3\" --out out.png [--labels out.txt]\n"
-           "                      [--px 48] [--font path.ttf]\n");
+           "                      [--px 48] [--font path.ttf] [--font-italic path.ttf]\n"
+           "                      [--italic] [--minus 2212]\n");
     return 1;
   }
   std::string why;
   ex::E e = ex::parse(src, &why);
   if (!why.empty()) { printf("parse error: %s\n", why.c_str()); return 1; }
 
-  ts::Font font;
+  ts::Font font, font_i;
   if (!ts::load_font(font, fontp, &why)) { printf("%s\n", why.c_str()); return 1; }
-  const ts::Rendered R = ts::render(font, e, px);
+  const bool has_i = st.italic_vars && ts::load_font(font_i, fontip, nullptr, true);
+  const ts::Rendered R = ts::render(font, has_i ? &font_i : nullptr, e, px, st);
   if (!out.empty()) {
     if (!stbi_write_png(out.c_str(), R.w, R.h, 1, R.gray.data(), R.w)) {
       printf("cannot write %s\n", out.c_str());
@@ -167,15 +181,27 @@ static int cmd_dataset(int argc, char** argv) {
   const int px_min = std::atoi(arg_of(argc, argv, "--px-min", "32").c_str());
   const int px_max = std::atoi(arg_of(argc, argv, "--px-max", "64").c_str());
   const std::string fontp = arg_of(argc, argv, "--font", "");
+  const std::string fontip = arg_of(argc, argv, "--font-italic", "");
+  const std::string prefix = arg_of(argc, argv, "--prefix", "");
+  // 実写に寄せるための混ぜ具合（0..100 の百分率）。**教科書は変数がイタリックで
+  // マイナスが U+2212**（実測: どちらも学習データに無く、本物の写真で x が y に化けた）。
+  const int ital_pct = std::atoi(arg_of(argc, argv, "--italic-pct", "50").c_str());
+  const int minus_pct = std::atoi(arg_of(argc, argv, "--minus2212-pct", "50").c_str());
   const bool no_img = has_flag(argc, argv, "--no-images");   // 枠だけ作る（パリティ確認用）
   if (dir.empty()) {
     printf("usage: mathcam dataset --out data/train --n 2000 [--seed 1] [--px-min 32]\n"
-           "                       [--px-max 64] [--font path.ttf] [--no-images]\n");
+           "                       [--px-max 64] [--font path.ttf] [--font-italic path.ttf]\n"
+           "                       [--italic-pct 50] [--minus2212-pct 50] [--prefix a]\n"
+           "                       [--no-images]\n"
+           "  書体を混ぜるには、フォントを変えて別の --seed --prefix で同じ dir に足す\n");
     return 1;
   }
   std::string why;
-  ts::Font font;
+  ts::Font font, font_i;
   if (!ts::load_font(font, fontp, &why)) { printf("%s\n", why.c_str()); return 1; }
+  const bool has_i = ital_pct > 0 && ts::load_font(font_i, fontip, nullptr, true);
+  if (ital_pct > 0 && !has_i)
+    printf("イタリックの書体が見つからないので立体だけで作る（--font-italic で渡す）\n");
 
   make_dir(dir + "/images");
   make_dir(dir + "/labels");
@@ -192,14 +218,21 @@ static int cmd_dataset(int argc, char** argv) {
   Rng rng(seed);
   int made = 0, skipped = 0;
   for (int i = 0; i < n; ++i) {
+    // 乱数を使う順番は**固定**する（1 つの式の中で 2 回呼ぶと C++ の評価順が不定になり、
+    // Python 側と食い違う。この落とし穴は前に踏んで RESUME に書いてある）
     const std::string src = gx::one(rng);
     const int px = (int)(px_min + (int)rng.below((uint64_t)(px_max - px_min + 1)));
+    const bool use_ital = (int)rng.below(100) < ital_pct;
+    const bool use_2212 = (int)rng.below(100) < minus_pct;
     std::string err;
     ex::E e = ex::parse(src, &err);
     if (!err.empty()) { ++skipped; continue; }        // 生成器が壊れた式を出したら捨てる
-    const ts::Rendered R = ts::render(font, e, px);
-    char stem[32];
-    snprintf(stem, sizeof stem, "%06d", made);
+    ts::Style st;
+    st.italic_vars = use_ital && has_i;
+    st.minus_cp = use_2212 ? 0x2212 : '-';
+    const ts::Rendered R = ts::render(font, st.italic_vars ? &font_i : nullptr, e, px, st);
+    char stem[40];
+    snprintf(stem, sizeof stem, "%s%06d", prefix.c_str(), made);
     if (!no_img) {
       const std::string ip = dir + "/images/" + stem + ".png";
       if (!stbi_write_png(ip.c_str(), R.w, R.h, 1, R.gray.data(), R.w)) {
@@ -277,10 +310,13 @@ static int cmd_selftest(int argc, char** argv) {
   const uint64_t seed = strtoull(arg_of(argc, argv, "--seed", "1").c_str(), nullptr, 10);
   const int px = std::atoi(arg_of(argc, argv, "--px", "48").c_str());
   const std::string fontp = arg_of(argc, argv, "--font", "");
+  const std::string fontip = arg_of(argc, argv, "--font-italic", "");
+  const ts::Style st = style_of(argc, argv);
   const bool show = has_flag(argc, argv, "--show-fail");
   std::string why;
-  ts::Font font;
+  ts::Font font, font_i;
   if (!ts::load_font(font, fontp, &why)) { printf("%s\n", why.c_str()); return 1; }
+  const bool has_i = st.italic_vars && ts::load_font(font_i, fontip, nullptr, true);
 
   Rng rng(seed);
   int ok = 0, bad = 0, skipped = 0, shown = 0;
@@ -302,7 +338,7 @@ static int cmd_selftest(int argc, char** argv) {
       }
       if (degenerate) { ++skipped; continue; }
     }
-    const ts::Rendered R = ts::render(font, e, px);
+    const ts::Rendered R = ts::render(font, has_i ? &font_i : nullptr, e, px, st);
     std::vector<pl::Sym> syms;
     for (size_t k = 0; k < R.cls.size(); ++k) {
       pl::Sym s;
@@ -340,7 +376,7 @@ static int cmd_fontinfo(int argc, char** argv) {
     std::string w2;
     ex::E e = ex::parse(dump, &w2);
     const ts::P pp = ts::present(e);
-    const ts::Layout L = ts::lay(f, pp, 1, 1);
+    const ts::Layout L = ts::lay(f, nullptr, pp, 1, 1);
     printf("row: w=%d asc=%d desc=%d  items=%zu\n", L.box.w, L.box.asc, L.box.desc,
            L.items.size());
     for (const ts::Item& it : L.items)
@@ -349,12 +385,36 @@ static int cmd_fontinfo(int argc, char** argv) {
              it.scale_den);
     return 0;
   }
+  // **書体に字が無いと、絵は空白でラベルだけ正しいデータができる**（学習を静かに壊す）。
+  // 学習データを作る前に、要る字が全部あるかを見る。advance と枠が両方 0 なら無いと判断する。
+  const std::string fontip = arg_of(argc, argv, "--font-italic", "");
+  ts::Font fi;
+  const bool has_i = ts::load_font(fi, fontip, nullptr, true);
+  static const int kNeedRoman[] = {'0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
+                                   '+', '-', '=', '(', ')', 0x221A, 0x2212};
+  static const int kNeedItalic[] = {'x', 'y', 't', 'a', 'b', 'c', 'n',
+                                    's', 'i', 'o', 'l', 'e', 'g', 'p', 'q', 'r'};
+  int missing = 0;
+  auto check = [&](const ts::Font& fo, const char* label, const int* cps, size_t n) {
+    printf("%s (upem %d):", label, fo.upem);
+    for (size_t i = 0; i < n; ++i) {
+      int x0, y0, x1, y1;
+      fo.bbox(cps[i], &x0, &y0, &x1, &y1);
+      const bool have = fo.advance(cps[i]) != 0 || x1 != x0 || y1 != y0;
+      if (!have) { printf(" [欠 U+%04X]", cps[i]); ++missing; }
+    }
+    printf(" %s\n", missing ? "" : "全部ある");
+  };
+  check(f, "立体", kNeedRoman, sizeof kNeedRoman / sizeof kNeedRoman[0]);
+  if (has_i) check(fi, "イタリック", kNeedItalic, sizeof kNeedItalic / sizeof kNeedItalic[0]);
+  else printf("イタリック: 読めなかった（--font-italic で渡す）\n");
   const char* cs = "72x+";
   for (const char* c = cs; *c; ++c) {
     int x0, y0, x1, y1;
     f.bbox(*c, &x0, &y0, &x1, &y1);
     printf("%c advance=%d bbox=(%d,%d,%d,%d)\n", *c, f.advance(*c), x0, y0, x1, y1);
   }
+  if (missing) { printf("**この書体は学習データに使えない**（%d 字欠け）\n", missing); return 1; }
   return 0;
 }
 
@@ -372,9 +432,12 @@ static int cmd_e2e(int argc, char** argv) {
   const int imgsz = std::atoi(arg_of(argc, argv, "--imgsz", "640").c_str());
   const float conf = (float)atof(arg_of(argc, argv, "--conf", "0.25").c_str());
   const bool show = has_flag(argc, argv, "--show-fail");
+  const std::string fontip = arg_of(argc, argv, "--font-italic", "");
+  const ts::Style st = style_of(argc, argv);
   std::string why;
-  ts::Font font;
+  ts::Font font, font_i;
   if (!ts::load_font(font, fontp, &why)) { printf("%s\n", why.c_str()); return 1; }
+  const bool has_i = st.italic_vars && ts::load_font(font_i, fontip, nullptr, true);
   onx::Graph g = onx::load_onnx(model_p);
   if (g.nodes.empty()) { printf("cannot read %s\n", model_p.c_str()); return 1; }
 
@@ -385,13 +448,13 @@ static int cmd_e2e(int argc, char** argv) {
     const int px = px_min + (int)rng.below((uint64_t)(px_max - px_min + 1));
     ex::E e = ex::parse(src, &why);
     if (!why.empty()) { ++skipped; continue; }
-    const ts::Rendered R = ts::render(font, e, px);
+    const ts::Rendered R = ts::render(font, has_i ? &font_i : nullptr, e, px, st);
     // 灰色 1ch を RGB に広げる（検出器は 3ch を期待する）
     std::vector<unsigned char> rgb((size_t)R.w * R.h * 3);
     for (size_t k = 0; k < (size_t)R.w * R.h; ++k) {
       rgb[k * 3] = rgb[k * 3 + 1] = rgb[k * 3 + 2] = R.gray[k];
     }
-    const pipe::Detected d = pipe::detect_syms(g, rgb.data(), R.w, R.h, imgsz, conf, 0.45f, BoxFmt::CXCYWH);
+    const pipeln::Detected d = pipeln::detect_syms(g, rgb.data(), R.w, R.h, imgsz, conf, 0.45f, BoxFmt::CXCYWH);
     const pl::Result r = pl::parse(d.syms);
     const bool same = r.ok && ex::equal(ex::expand(r.e), ex::expand(e));
     if (same) ++ok;
@@ -439,18 +502,47 @@ static int cmd_photo(int argc, char** argv) {
   // 箱の形は export 依存。Ultralytics の素の export は cxcywh（姉妹リポの記録）
   const BoxFmt fmt = arg_of(argc, argv, "--fmt", "cxcywh") == "xyxy" ? BoxFmt::XYXY
                                                                     : BoxFmt::CXCYWH;
+  // 実写のページには式が何本も載っている。1 本を切り出して渡せるようにする
+  // （デモでも「読みたい式を囲む」操作が要る。ページ全体を 640 に縮めると字が潰れる）。
+  const std::string crop = arg_of(argc, argv, "--crop", "");
+  const std::string save_crop = arg_of(argc, argv, "--save-crop", "");
   if (img_p.empty()) {
-    printf("usage: mathcam photo --img x.png [--model models/sym_det.onnx] [--steps]\n");
+    printf("usage: mathcam photo --img x.png [--model models/sym_det.onnx] [--steps]\n"
+           "                     [--crop x0,y0,x1,y1] [--save-crop crop.png] [--conf 0.25]\n");
     return 1;
   }
   int w = 0, h = 0, ch = 0;
   unsigned char* px = stbi_load(img_p.c_str(), &w, &h, &ch, 3);
   if (!px) { printf("cannot read %s\n", img_p.c_str()); return 1; }
+  std::vector<unsigned char> cropped;
+  if (!crop.empty()) {
+    int x0 = 0, y0 = 0, x1 = w, y1 = h;
+    if (sscanf(crop.c_str(), "%d,%d,%d,%d", &x0, &y0, &x1, &y1) != 4) {
+      printf("--crop は x0,y0,x1,y1 の形で渡す\n");
+      stbi_image_free(px);
+      return 1;
+    }
+    x0 = std::max(0, std::min(x0, w - 1));
+    y0 = std::max(0, std::min(y0, h - 1));
+    x1 = std::max(x0 + 1, std::min(x1, w));
+    y1 = std::max(y0 + 1, std::min(y1, h));
+    const int cw = x1 - x0, cah = y1 - y0;
+    cropped.resize((size_t)cw * cah * 3);
+    for (int y = 0; y < cah; ++y)
+      memcpy(&cropped[(size_t)y * cw * 3], px + ((size_t)(y + y0) * w + x0) * 3,
+             (size_t)cw * 3);
+    stbi_image_free(px);
+    px = cropped.data();
+    w = cw;
+    h = cah;
+    printf("切り出し: %dx%d\n", w, h);
+    if (!save_crop.empty()) stbi_write_png(save_crop.c_str(), w, h, 3, px, w * 3);
+  }
   onx::Graph g = onx::load_onnx(model_p);
   if (g.nodes.empty()) { printf("cannot read %s\n", model_p.c_str()); stbi_image_free(px); return 1; }
   // e2e と WASM と同じ 1 本を通す（pure/pipeline.hpp）
-  const pipe::Detected det = pipe::detect_syms(g, px, w, h, imgsz, conf, nms, fmt);
-  stbi_image_free(px);
+  const pipeln::Detected det = pipeln::detect_syms(g, px, w, h, imgsz, conf, nms, fmt);
+  if (cropped.empty()) stbi_image_free(px);      // 切り出し時は cropped の持ち物なので触らない
   const std::vector<pl::Sym>& syms = det.syms;
   printf("%zu 記号を検出\n", syms.size());
   if (show_syms) {

@@ -50,8 +50,8 @@ EMSCRIPTEN_KEEPALIVE int mc_run(const unsigned char* rgba, int w, int h, int img
     rgb[i * 3 + 1] = rgba[i * 4 + 1];
     rgb[i * 3 + 2] = rgba[i * 4 + 2];
   }
-  const pipe::Detected det =
-      pipe::detect_syms(g_graph, rgb.data(), w, h, imgsz > 0 ? imgsz : 640,
+  const pipeln::Detected det =
+      pipeln::detect_syms(g_graph, rgb.data(), w, h, imgsz > 0 ? imgsz : 640,
                         conf > 0.f ? conf : 0.25f, 0.45f, BoxFmt::CXCYWH);
 
   std::string js = "{\"count\":" + std::to_string(det.syms.size()) + ",\"syms\":[";

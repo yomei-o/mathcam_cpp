@@ -79,7 +79,10 @@ inline Rat rpow(const Rat& a, long long e) {
 
 // ---------------------------------------------------------------- 木
 
-enum class Kind { Num, Sym, Add, Mul, Pow, Fn, Eq };
+// Rel は関係式（= < <= > >=）で、**演算子は name に入れる**。Kind を 5 つに分けない理由は、
+// cmp / simp / expand / 印字が全部同じ形で書けるから（既定の cmp が name も比べている）。
+// Sys は連立（関係式の列）。並びは書かれた順のまま保つ（人が書いた順で手順を見せるため）。
+enum class Kind { Num, Sym, Add, Mul, Pow, Fn, Rel, Sys };
 
 struct Node;
 using E = std::shared_ptr<const Node>;
@@ -87,8 +90,8 @@ using E = std::shared_ptr<const Node>;
 struct Node {
   Kind k = Kind::Num;
   Rat num;                    // Num
-  std::string name;           // Sym の変数名 / Fn の関数名
-  std::vector<E> kids;        // Add/Mul は 2 個以上、Pow と Eq は 2 個、Fn は引数
+  std::string name;           // Sym の変数名 / Fn の関数名 / Rel の演算子
+  std::vector<E> kids;        // Add/Mul は 2 個以上、Pow と Rel は 2 個、Fn は引数、Sys は関係式
 };
 
 inline E mk(Kind k) { auto n = std::make_shared<Node>(); n->k = k; return n; }
@@ -312,7 +315,12 @@ inline E simp(const E& e) {
     case Kind::Mul: return mul_n(e->kids);
     case Kind::Pow: return pow_e(e->kids[0], e->kids[1]);
     case Kind::Fn: return fn_e(e->name, e->kids);
-    case Kind::Eq: return raw(Kind::Eq, {simp(e->kids[0]), simp(e->kids[1])});
+    case Kind::Rel: return raw(Kind::Rel, {simp(e->kids[0]), simp(e->kids[1])}, e->name);
+    case Kind::Sys: {
+      std::vector<E> ks;
+      for (const E& c : e->kids) ks.push_back(simp(c));
+      return raw(Kind::Sys, ks);
+    }
   }
   return e;
 }
@@ -323,7 +331,32 @@ inline E sub(const E& a, const E& b) { return add_n({a, mul_n({num(Rat(-1)), b})
 inline E mul(const E& a, const E& b) { return mul_n({a, b}); }
 inline E div(const E& a, const E& b) { return mul_n({a, pow_e(b, num(Rat(-1)))}); }
 inline E neg(const E& a) { return mul_n({num(Rat(-1)), a}); }
-inline E eq(const E& a, const E& b) { return raw(Kind::Eq, {simp(a), simp(b)}); }
+
+// 関係式。`op` は "=" "<" "<=" ">" ">=" のどれか。
+inline E rel(const std::string& op, const E& a, const E& b) {
+  return raw(Kind::Rel, {simp(a), simp(b)}, op);
+}
+inline E eq(const E& a, const E& b) { return rel("=", a, b); }
+inline bool is_rel(const E& e) { return e->k == Kind::Rel; }
+inline bool is_eq(const E& e) { return e->k == Kind::Rel && e->name == "="; }
+
+// 不等号の向きを裏返す。**負の数を両辺にかける／割るときに必ず要る**（中学生が最も間違える所で、
+// 手順表示でもここだけは理由を書く）。
+inline std::string flip_op(const std::string& op) {
+  if (op == "<") return ">";
+  if (op == "<=") return ">=";
+  if (op == ">") return "<";
+  if (op == ">=") return "<=";
+  return op;                                       // "=" は裏返しても "="
+}
+
+// 連立（関係式の列）。1 本だけならそのまま返す（Sys で包むと印字が変わってしまう）
+inline E sys(const std::vector<E>& rels) {
+  if (rels.size() == 1) return simp(rels[0]);
+  std::vector<E> ks;
+  for (const E& c : rels) ks.push_back(simp(c));
+  return raw(Kind::Sys, ks);
+}
 
 // ---------------------------------------------------------------- 展開
 //
@@ -378,7 +411,13 @@ inline E expand(const E& e) {
       for (const E& c : e->kids) xs.push_back(expand(c));
       return fn_e(e->name, xs);
     }
-    case Kind::Eq: return raw(Kind::Eq, {expand(e->kids[0]), expand(e->kids[1])});
+    case Kind::Rel:
+      return raw(Kind::Rel, {expand(e->kids[0]), expand(e->kids[1])}, e->name);
+    case Kind::Sys: {
+      std::vector<E> ks;
+      for (const E& c : e->kids) ks.push_back(expand(c));
+      return raw(Kind::Sys, ks);
+    }
   }
   return e;
 }
@@ -424,7 +463,8 @@ inline std::vector<E> disp_terms(const E& e) {
 // 演算子の優先順位。括弧を出しすぎず、足りなくもしないため
 inline int prec(const E& e) {
   switch (e->k) {
-    case Kind::Eq: return 0;
+    case Kind::Sys: return -1;
+    case Kind::Rel: return 0;
     case Kind::Add: return 1;
     case Kind::Mul: return 2;
     case Kind::Pow: return 3;
@@ -527,7 +567,17 @@ inline std::string to_infix(const E& e, int parent) {
       for (size_t i = 0; i < e->kids.size(); ++i) { if (i) s += ", "; s += to_infix(e->kids[i]); }
       return s + ")";
     }
-    case Kind::Eq: return to_infix(e->kids[0]) + " = " + to_infix(e->kids[1]);
+    case Kind::Rel:
+      return to_infix(e->kids[0]) + " " + e->name + " " + to_infix(e->kids[1]);
+    case Kind::Sys: {
+      // 連立は ", " で並べる。**この形をパーサが読み戻せる**（往復不変を Sys でも保つ）
+      std::string s;
+      for (size_t i = 0; i < e->kids.size(); ++i) {
+        if (i) s += ", ";
+        s += to_infix(e->kids[i]);
+      }
+      return s;
+    }
   }
   return "?";
 }
@@ -598,7 +648,19 @@ inline std::string to_latex(const E& e, int parent = 0) {
       for (size_t i = 0; i < e->kids.size(); ++i) { if (i) s += ", "; s += to_latex(e->kids[i]); }
       return s + ")";
     }
-    case Kind::Eq: return to_latex(e->kids[0]) + " = " + to_latex(e->kids[1]);
+    case Kind::Rel: {
+      const std::string op = e->name == "<=" ? "\\le" : e->name == ">=" ? "\\ge" : e->name;
+      return to_latex(e->kids[0]) + " " + op + " " + to_latex(e->kids[1]);
+    }
+    case Kind::Sys: {
+      std::string s = "\\begin{cases}";
+      for (size_t i = 0; i < e->kids.size(); ++i) {
+        if (i) s += " \\\\ ";
+        else s += " ";
+        s += to_latex(e->kids[i]);
+      }
+      return s + " \\end{cases}";
+    }
   }
   (void)parent;
   return "?";
@@ -621,14 +683,34 @@ struct Parser {
   bool peek(char c) { ws(); return i < s.size() && s[i] == c; }
 
   E parse_all() {
-    E e = parse_eq();
+    std::vector<E> rels{parse_rel()};
+    for (;;) {
+      ws();
+      if (peek(',') || peek(';')) {                  // 連立は "," か ";" で区切る
+        if (!eat(',')) eat(';');
+        rels.push_back(parse_rel());
+        continue;
+      }
+      break;
+    }
     ws();
     if (i < s.size() && err.empty()) err = "余分な文字: " + s.substr(i);
-    return e;
+    if (rels.size() == 1) return rels[0];
+    return raw(Kind::Sys, rels);
   }
-  E parse_eq() {
+  // 関係演算子は 1 段だけ（a < b < c のような連鎖は受けない。中学の書き方に無いので、
+  // 受けると「読めているつもりで別の意味」になる）
+  E parse_rel() {
     E l = parse_add();
-    if (eat('=')) return raw(Kind::Eq, {l, parse_add()});
+    ws();
+    if (i + 1 < s.size() && (s[i] == '<' || s[i] == '>') && s[i + 1] == '=') {
+      const std::string op = std::string(1, s[i]) + "=";
+      i += 2;
+      return raw(Kind::Rel, {l, parse_add()}, op);
+    }
+    if (eat('<')) return raw(Kind::Rel, {l, parse_add()}, "<");
+    if (eat('>')) return raw(Kind::Rel, {l, parse_add()}, ">");
+    if (eat('=')) return raw(Kind::Rel, {l, parse_add()}, "=");
     return l;
   }
   E parse_add() {
@@ -721,6 +803,16 @@ inline void collect_syms(const E& e, std::vector<std::string>& out) {
   for (const E& c : e->kids) collect_syms(c, out);
 }
 
+// 変数を式で置き換える（代入法、連立の後半、将来の微分の合成に使う）。
+// 置き換えた後は simp を通すので、結果は正規形。
+inline E subst(const E& e, const std::string& var, const E& val) {
+  if (e->k == Kind::Sym) return e->name == var ? val : e;
+  if (e->kids.empty()) return e;
+  std::vector<E> ks;
+  for (const E& c : e->kids) ks.push_back(subst(c, var, val));
+  return simp(raw(e->k, ks, e->name));
+}
+
 // 数値評価（表示の最後だけで使う。厳密に閉じない sqrt などのため）
 inline double approx(const E& e) {
   switch (e->k) {
@@ -739,7 +831,8 @@ inline double approx(const E& e) {
       if (e->name == "abs") return std::fabs(a);
       return a;
     }
-    case Kind::Eq: return approx(e->kids[0]) - approx(e->kids[1]);
+    case Kind::Rel: return approx(e->kids[0]) - approx(e->kids[1]);
+    case Kind::Sys: return 0.0;                        // 連立に数値はない（呼ぶ側で弾く）
   }
   return 0.0;
 }

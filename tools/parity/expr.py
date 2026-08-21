@@ -38,6 +38,9 @@ FIXED = [
     "sin(0) + cos(0)", "ln(1)", "abs(-3)", "exp(0)", "sin(x) + sin(x)",
     "1/(x+1)", "(x+1)/(x+1)", "2/(4x)", "x^2/x", "0*x", "x^0",
     "1 + 2 + 3 + 4 + 5", "2*(3 + 4*(5 - 6))", "-2^2", "(-2)^2",
+    # 関係式と連立（印字と往復不変をここでも縛る。"," 区切りが読み戻せることが要点）
+    "3x - 5 > 1", "x <= 2/3", "-x >= -1", "2 < x", "x + y = 5, 2x - y = 1",
+    "x > 1, x <= 4", "y = 2x - 1, 3x + y = 9", "a + b = 2, a - b = 0",
 ]
 
 
@@ -50,6 +53,15 @@ def gen(rng, depth=0):
         if r < 0.60:
             return "%d/%d" % (rng.randint(-9, 9), rng.randint(1, 9))
         return rng.choice(["x", "y", "x", "x", "t"])
+    if depth == 0 and rng.random() < 0.22:            # 関係式・連立も混ぜる
+        op = rng.choice(["=", "<", "<=", ">", ">="])
+        left, right = gen(rng, depth + 1), gen(rng, depth + 1)
+        one = "%s %s %s" % (left, op, right)
+        if rng.random() < 0.4:
+            op2 = rng.choice(["=", "<", ">="])
+            l2, r2 = gen(rng, depth + 1), gen(rng, depth + 1)
+            return "%s, %s %s %s" % (one, l2, op2, r2)
+        return one
     op = rng.choice(["+", "-", "*", "/", "^", "impl", "fn", "neg", "paren"])
     a = gen(rng, depth + 1)
     if op == "neg":

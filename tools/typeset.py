@@ -36,27 +36,43 @@ K_MARGIN = 250
 GLYPH, ROW, SUP, FRAC, SQRT, PAREN = range(6)
 
 
-class PNode:
-    __slots__ = ("k", "cp", "cls", "kids")
+class Style:
+    """描き方の指定（C++ の ts::Style の鏡）。既定は今までと同じ絵。
 
-    def __init__(self, k, cp=0, cls="", kids=()):
+    教科書は変数がイタリックで、マイナスが U+2212（長い横棒）。実測ではこの 2 つが
+    学習データに無いだけで、端から端までの正解率が 95.0% -> 33.3% に落ちた。
+    """
+
+    __slots__ = ("italic_vars", "minus_cp")
+
+    def __init__(self, italic_vars=False, minus_cp=ord("-")):
+        self.italic_vars = italic_vars
+        self.minus_cp = minus_cp
+
+
+class PNode:
+    __slots__ = ("k", "cp", "cls", "ital", "kids")
+
+    def __init__(self, k, cp=0, cls="", kids=(), ital=False):
         self.k = k
         self.cp = cp
         self.cls = cls
+        self.ital = ital
         self.kids = list(kids)
 
 
-def pg(cp, cls):
-    return PNode(GLYPH, cp=cp, cls=cls)
+def pg(cp, cls, ital=False):
+    return PNode(GLYPH, cp=cp, cls=cls, ital=ital)
 
 
 def pn(k, kids):
     return PNode(k, kids=kids)
 
 
-def push_digits(out, v):
+def push_digits(out, v, st=None):
+    st = st or Style()
     if v < 0:
-        out.append(pg(ord("-"), "-"))
+        out.append(pg(st.minus_cp, "-"))
         v = -v
     for c in str(v):
         out.append(pg(ord(c), c))
@@ -79,19 +95,20 @@ def split_frac(e):
     return up, down
 
 
-def present(e, paren=False):
+def present(e, paren=False, st=None):
+    st = st or Style()
     row = []
     if e.k == X.NUM:
         if e.num.is_int():
-            push_digits(row, e.num.n)
+            push_digits(row, e.num.n, st)
         else:
             nu, de = [], []
-            push_digits(nu, e.num.n)
-            push_digits(de, e.num.d)
+            push_digits(nu, e.num.n, st)
+            push_digits(de, e.num.d, st)
             return pn(FRAC, [pn(ROW, nu), pn(ROW, de)])
     elif e.k == X.SYM:
-        for c in e.name:
-            row.append(pg(ord(c), c))
+        for c in e.name:                                 # 変数だけイタリック（教科書の組み方）
+            row.append(pg(ord(c), c, st.italic_vars))
     elif e.k == X.ADD:
         ts = X.disp_terms(e)
         for i, t in enumerate(ts):
@@ -99,9 +116,9 @@ def present(e, paren=False):
             minus = c.neg()
             if i == 0:
                 if minus:
-                    row.append(pg(ord("-"), "-"))
+                    row.append(pg(st.minus_cp, "-"))
             else:
-                row.append(pg(ord("-") if minus else ord("+"), "-" if minus else "+"))
+                row.append(pg(st.minus_cp if minus else ord("+"), "-" if minus else "+"))
             ac = -c if minus else c
             if ac.is_one() and not X.is_num(rest):
                 body = rest
@@ -109,7 +126,7 @@ def present(e, paren=False):
                 body = X.num(ac)
             else:
                 body = X.mul_n([X.num(ac), rest])
-            row.append(present(body, body.k == X.ADD))
+            row.append(present(body, body.k == X.ADD, st))
     elif e.k == X.MUL:
         up, down = split_frac(e)
         if down:
@@ -120,27 +137,36 @@ def present(e, paren=False):
                     up = keep
             nu = X.num(1) if not up else (up[0] if len(up) == 1 else X.raw(X.MUL, up))
             de = down[0] if len(down) == 1 else X.raw(X.MUL, down)
-            return pn(FRAC, [present(nu), present(de)])
+            return pn(FRAC, [present(nu, False, st), present(de, False, st)])
         for f in e.kids:
-            row.append(present(f, f.k == X.ADD))
+            row.append(present(f, f.k == X.ADD, st))
     elif e.k == X.POW:
         b, p = e.kids
         if X.is_num(p) and p.num == X.Rat(1, 2):
-            return pn(SQRT, [present(b)])
+            return pn(SQRT, [present(b, False, st)])
         # 負の指数は分数で描く（人は y^-1 ではなく 1/y と書く）。上付きで描くと解析側が
         # 指数の "-" を二項の引き算と取り違える
         if X.is_num(p) and p.num.neg():
             inv = b if (p.num.n == -1 and p.num.d == 1) else X.raw(X.POW, [b, X.num(-p.num)])
-            return pn(FRAC, [present(X.num(1)), present(inv)])
-        return pn(SUP, [present(b, b.k in (X.ADD, X.MUL)), present(p)])
+            return pn(FRAC, [present(X.num(1), False, st), present(inv, False, st)])
+        return pn(SUP, [present(b, b.k in (X.ADD, X.MUL), st), present(p, False, st)])
     elif e.k == X.FN:
         for c in e.name:
             row.append(pg(ord(c), c))
-        row.append(pn(PAREN, [present(e.kids[0] if e.kids else X.num(0))]))
-    elif e.k == X.EQ:
-        row.append(present(e.kids[0]))
-        row.append(pg(ord("="), "="))
-        row.append(present(e.kids[1]))
+        row.append(pn(PAREN, [present(e.kids[0] if e.kids else X.num(0), False, st)]))
+    elif e.k == X.REL:
+        # 演算子は name の 1 文字ずつを字として置く（"=" のときは以前と同じ絵）。
+        # "<=" は暫定で '<' '=' の 2 字（本物の ≤ の字とクラス追加は認識側の仕事）
+        row.append(present(e.kids[0], False, st))
+        for c in e.name:
+            row.append(pg(st.minus_cp if c == "-" else ord(c), c))
+        row.append(present(e.kids[1], False, st))
+    elif e.k == X.SYS:
+        # 連立は暫定で 1 行に "," 区切り（本来は中括弧つきの複数行）
+        for i, c in enumerate(e.kids):
+            if i:
+                row.append(pg(ord(","), ","))
+            row.append(present(c, False, st))
     r = pn(ROW, row)
     return pn(PAREN, [r]) if paren else r
 
@@ -160,10 +186,20 @@ class Font:
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
         "/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf",
     ]
+    # 数式のイタリック体（教科書の変数はこれで組まれている）。C++ 側の kItalic と同じ並び
+    CANDIDATES_ITALIC = [
+        "fonts/math-italic.ttf",
+        "C:/Windows/Fonts/timesi.ttf",
+        "C:/Windows/Fonts/cambriai.ttf",
+        "C:/Windows/Fonts/georgiai.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Italic.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSerif-Italic.ttf",
+    ]
 
-    def __init__(self, path=""):
+    def __init__(self, path="", italic=False):
         from fontTools.ttLib import TTFont
-        tries = ([path] if path else []) + self.CANDIDATES
+        tries = ([path] if path else []) + (self.CANDIDATES_ITALIC if italic
+                                            else self.CANDIDATES)
         self.path = None
         for p in tries:
             if os.path.exists(p):
@@ -218,9 +254,10 @@ def mulr(v, sn, sd):
 
 
 class Item:
-    __slots__ = ("cls", "cp", "x", "y", "sn", "sd", "w", "h", "x0", "y0", "x1", "y1")
+    __slots__ = ("cls", "cp", "x", "y", "sn", "sd", "w", "h", "x0", "y0", "x1", "y1", "ital")
 
     def __init__(self, cls, cp, x, y, sn, sd, w, h, x0, y0, x1, y1):
+        self.ital = False
         self.cls, self.cp = cls, cp
         self.x, self.y = x, y
         self.sn, self.sd = sn, sd
@@ -246,13 +283,30 @@ def shift(L, dx, dy):
         it.y1 += dy
 
 
-def lay(f, p, sn=1, sd=1):
+def conv_upem(v, from_upem, to_upem):
+    """別の upem を持つ書体を混ぜても崩れないように「ローマン体のフォント単位」に直す。
+    C++ の conv_upem と同じ切り捨て（0 方向）にする。"""
+    q = v * to_upem
+    return q // from_upem if q >= 0 else -((-q) // from_upem)
+
+
+def lay(f, fi, p, sn=1, sd=1):
     out = Layout()
     if p.k == GLYPH:
-        adv = mulr(f.advance(p.cp), sn, sd)
-        x0, y0, x1, y1 = f.bbox(p.cp)
+        ital = p.ital and fi is not None
+        g = fi if ital else f
+        adv = g.advance(p.cp)
+        x0, y0, x1, y1 = g.bbox(p.cp)
+        if ital and g.upem != f.upem:
+            adv = conv_upem(adv, g.upem, f.upem)
+            x0 = conv_upem(x0, g.upem, f.upem)
+            y0 = conv_upem(y0, g.upem, f.upem)
+            x1 = conv_upem(x1, g.upem, f.upem)
+            y1 = conv_upem(y1, g.upem, f.upem)
+        adv = mulr(adv, sn, sd)
         it = Item(p.cls, p.cp, 0, 0, sn, sd, 0, 0,
                   mulr(x0, sn, sd), mulr(y0, sn, sd), mulr(x1, sn, sd), mulr(y1, sn, sd))
+        it.ital = ital
         out.items.append(it)
         out.w = adv
         out.asc = it.y1 if it.y1 > 0 else 0
@@ -262,7 +316,7 @@ def lay(f, p, sn=1, sd=1):
     if p.k == ROW:
         x = asc = desc = 0
         for c in p.kids:
-            L = lay(f, c, sn, sd)
+            L = lay(f, fi, c, sn, sd)
             op = c.k == GLYPH and c.cls in ("+", "-", "=")
             if op:
                 x += mulr(emk(f, K_OP_SPACE), sn, sd)
@@ -277,8 +331,8 @@ def lay(f, p, sn=1, sd=1):
         return out
 
     if p.k == SUP:
-        b = lay(f, p.kids[0], sn, sd)
-        e = lay(f, p.kids[1], sn * K_SUP_NUM, sd * K_SUP_DEN)
+        b = lay(f, fi, p.kids[0], sn, sd)
+        e = lay(f, fi, p.kids[1], sn * K_SUP_NUM, sd * K_SUP_DEN)
         rise = mulr(emk(f, K_SUP_SHIFT), sn, sd)
         shift(e, b.w, rise)
         out.items = b.items + e.items
@@ -288,8 +342,8 @@ def lay(f, p, sn=1, sd=1):
         return out
 
     if p.k == FRAC:
-        nu = lay(f, p.kids[0], sn, sd)
-        de = lay(f, p.kids[1], sn, sd)
+        nu = lay(f, fi, p.kids[0], sn, sd)
+        de = lay(f, fi, p.kids[1], sn, sd)
         pad = mulr(emk(f, K_FRAC_PAD), sn, sd)
         bar = mulr(emk(f, K_BAR), sn, sd)
         gap = mulr(emk(f, K_FRAC_GAP), sn, sd)
@@ -307,11 +361,11 @@ def lay(f, p, sn=1, sd=1):
         return out
 
     if p.k == SQRT:
-        inner = lay(f, p.kids[0], sn, sd)
+        inner = lay(f, fi, p.kids[0], sn, sd)
         pad = mulr(emk(f, K_SQRT_PAD), sn, sd)
         radv = mulr(f.advance(0x221A), sn, sd)
         bar = mulr(emk(f, K_BAR), sn, sd)
-        rad = lay(f, pg(0x221A, "sqrt"), sn, sd)
+        rad = lay(f, fi, pg(0x221A, "sqrt"), sn, sd)
         shift(inner, radv + pad, 0)
         top = max(inner.asc + pad, rad.asc)
         out.items = list(rad.items)
@@ -324,9 +378,9 @@ def lay(f, p, sn=1, sd=1):
         return out
 
     if p.k == PAREN:
-        inner = lay(f, p.kids[0], sn, sd)
-        l = lay(f, pg(ord("("), "("), sn, sd)
-        r = lay(f, pg(ord(")"), ")"), sn, sd)
+        inner = lay(f, fi, p.kids[0], sn, sd)
+        l = lay(f, fi, pg(ord("("), "("), sn, sd)
+        r = lay(f, fi, pg(ord(")"), ")"), sn, sd)
         shift(inner, l.w, 0)
         shift(r, l.w + inner.w, 0)
         out.items = l.items + inner.items + r.items
@@ -344,10 +398,10 @@ def to_px(v, px, upem):
     return (num + den // 2) // den if num >= 0 else -((-num + den // 2) // den)
 
 
-def layout_boxes(f, e, px):
+def layout_boxes(f, e, px, fi=None, st=None):
     """(w, h, [(cls, x0, y0, x1, y1)]) を返す。これが C++ と一致すべきもの。"""
-    p = present(e)
-    L = lay(f, p)
+    p = present(e, False, st or Style())
+    L = lay(f, fi, p)
     minx, maxx = 0, L.w
     miny, maxy = -L.desc, L.asc
     for it in L.items:
@@ -378,25 +432,28 @@ def layout_boxes(f, e, px):
         by1 = to_px(oy - it.y0, px, f.upem)
         boxes.append((it.cls, bx0, by0, max(bx1, bx0 + 1), max(by1, by0 + 1)))
         draw.append(("glyph", to_px(it.x + ox, px, f.upem), to_px(oy - it.y, px, f.upem),
-                     it.cp, it.sn, it.sd, 0, 0))
+                     it.cp, it.sn, it.sd, 1 if it.ital else 0, 0))
     return W, H, boxes, draw
 
 
-def render(f, e, px):
+def render(f, e, px, fi=None, st=None):
     """絵を描いて (PIL.Image, boxes) を返す。ラスタは C++ と一致しない（意図的、冒頭参照）。"""
     from PIL import Image, ImageDraw, ImageFont
-    W, H, boxes, draw = layout_boxes(f, e, px)
+    W, H, boxes, draw = layout_boxes(f, e, px, fi, st)
     img = Image.new("L", (W, H), 255)
     d = ImageDraw.Draw(img)
     fonts = {}
-    for kind, a, b, c, sn, sd, _g, _h in draw:
+    for kind, a, b, c, sn, sd, ital, _h in draw:
         if kind == "line":
             d.rectangle([a, b, c - 1, sn - 1], fill=0)
             continue
+        # イタリックの字はその書体の upem で大きさを決める（em の大きさを合わせる）
+        src = fi if (ital and fi is not None) else f
         size = max(1, round(px * sn / sd))
-        if size not in fonts:
-            fonts[size] = ImageFont.truetype(f.path, size)
-        d.text((a, b), chr(c), font=fonts[size], fill=0, anchor="ls")
+        key = (size, 1 if src is fi else 0)
+        if key not in fonts:
+            fonts[key] = ImageFont.truetype(src.path, size)
+        d.text((a, b), chr(c), font=fonts[key], fill=0, anchor="ls")
     return img, boxes
 
 

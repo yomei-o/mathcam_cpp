@@ -12,7 +12,9 @@
 #include <cmath>
 #include <vector>
 
-namespace pipe {
+// 名前は pipeln。**pipe にすると Linux で壊れる**（POSIX の pipe() が
+// グローバルにあるので "pipe does not name a type" になる。MSVC では通るので気付かない）
+namespace pipeln {
 
 // 画像 1 枚 -> 記号（検出 -> 元座標に戻す -> クラスを無視した重複除去まで）。
 // photo と e2e で同じ道を通すために関数にしてある（別の道でテストすると、その差分だけ
@@ -92,4 +94,4 @@ inline Detected detect_syms(const onx::Graph& g, const unsigned char* rgb, int w
 }
 
 
-}  // namespace pipe
+}  // namespace pipeln

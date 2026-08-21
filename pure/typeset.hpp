@@ -66,12 +66,13 @@ struct PNode {
   PK k = PK::Glyph;
   int cp = 0;                 // Glyph の文字（Unicode）
   std::string cls;            // 認識のクラス名（"0".."9", "x", "+", "sqrt", "frac" …）
+  bool ital = false;          // イタリックの書体で描く字か（教科書は変数だけイタリック）
   std::vector<P> kids;
 };
 
-inline P pg(int cp, const std::string& cls) {
+inline P pg(int cp, const std::string& cls, bool ital = false) {
   auto n = std::make_shared<PNode>();
-  n->k = PK::Glyph; n->cp = cp; n->cls = cls;
+  n->k = PK::Glyph; n->cp = cp; n->cls = cls; n->ital = ital;
   return n;
 }
 inline P pn(PK k, std::vector<P> kids) {
@@ -80,14 +81,25 @@ inline P pn(PK k, std::vector<P> kids) {
   return n;
 }
 
-inline void push_digits(std::vector<P>& out, long long v) {
-  if (v < 0) { out.push_back(pg('-', "-")); v = -v; }
+// 描き方の指定。**実写の教科書に寄せるためのつまみ**で、既定は今までと同じ絵。
+//
+//   * italic_vars: 変数をイタリックで描く。教科書は必ずそう組む（数字は立体、文字は斜体）。
+//   * minus_cp: マイナスの字。教科書は U+2212（長い横棒）で、ASCII の '-' より明らかに長い。
+//     実測: 本物の写真で U+2212 のマイナスは conf 0.01〜0.05 しか出なかった（学習データに
+//     '-' しか無いため）。クラス名は "-" のままなので、クラス表は増えない。
+struct Style {
+  bool italic_vars = false;
+  int minus_cp = '-';
+};
+
+inline void push_digits(std::vector<P>& out, long long v, const Style& st = Style()) {
+  if (v < 0) { out.push_back(pg(st.minus_cp, "-")); v = -v; }
   std::string s = std::to_string(v);
   for (char c : s) out.push_back(pg(c, std::string(1, c)));
 }
 
 // 意味の木 -> 見た目の木。ここが「a/b は分数として描く」を決める場所。
-inline P present(const ex::E& e, bool paren = false);
+inline P present(const ex::E& e, bool paren = false, const Style& st = Style());
 
 inline P present_row(const std::vector<P>& items) { return pn(PK::Row, items); }
 
@@ -110,20 +122,21 @@ inline void split_frac(const ex::E& e, std::vector<ex::E>& up, std::vector<ex::E
   }
 }
 
-inline P present(const ex::E& e, bool paren) {
+inline P present(const ex::E& e, bool paren, const Style& st) {
   using namespace ex;
   std::vector<P> row;
   switch (e->k) {
     case Kind::Num: {
-      if (e->num.is_int()) { push_digits(row, e->num.n); break; }
+      if (e->num.is_int()) { push_digits(row, e->num.n, st); break; }
       // 分数は横線で描く（意味の木では有理数 1 個でも、見た目は 2 段）
       std::vector<P> nu, de;
-      push_digits(nu, e->num.n);
-      push_digits(de, e->num.d);
+      push_digits(nu, e->num.n, st);
+      push_digits(de, e->num.d, st);
       return pn(PK::Frac, {present_row(nu), present_row(de)});
     }
     case Kind::Sym:
-      for (char c : e->name) row.push_back(pg(c, std::string(1, c)));
+      // 変数だけイタリック（教科書の組み方）
+      for (char c : e->name) row.push_back(pg(c, std::string(1, c), st.italic_vars));
       break;
     case Kind::Add: {
       const std::vector<E> ts = disp_terms(e);
@@ -131,12 +144,12 @@ inline P present(const ex::E& e, bool paren) {
         Rat c; E rest;
         split_coeff(ts[i], c, rest);
         const bool minus = c.neg();
-        if (i == 0) { if (minus) row.push_back(pg('-', "-")); }
-        else row.push_back(pg(minus ? '-' : '+', minus ? "-" : "+"));
+        if (i == 0) { if (minus) row.push_back(pg(st.minus_cp, "-")); }
+        else row.push_back(pg(minus ? st.minus_cp : '+', minus ? "-" : "+"));
         Rat ac = minus ? -c : c;
         E body = ac.is_one() && !is_num(rest) ? rest
                  : (is_num(rest) && rest->num.is_one() ? num(ac) : mul_n({num(ac), rest}));
-        row.push_back(present(body, body->k == Kind::Add));
+        row.push_back(present(body, body->k == Kind::Add, st));
       }
       break;
     }
@@ -153,33 +166,46 @@ inline P present(const ex::E& e, bool paren) {
         }
         const E nu = up.empty() ? num(Rat(1)) : (up.size() == 1 ? up[0] : raw(Kind::Mul, up));
         const E de = down.size() == 1 ? down[0] : raw(Kind::Mul, down);
-        return pn(PK::Frac, {present(nu), present(de)});
+        return pn(PK::Frac, {present(nu, false, st), present(de, false, st)});
       }
       // 掛け算は記号を書かずに並べる（印刷数式の慣習。2x, 3(x+1)）
-      for (const E& f : e->kids) row.push_back(present(f, f->k == Kind::Add));
+      for (const E& f : e->kids) row.push_back(present(f, f->k == Kind::Add, st));
       break;
     }
     case Kind::Pow: {
       const E& b = e->kids[0];
       const E& p = e->kids[1];
-      if (is_num(p) && p->num == Rat(1, 2)) return pn(PK::Sqrt, {present(b)});
+      if (is_num(p) && p->num == Rat(1, 2)) return pn(PK::Sqrt, {present(b, false, st)});
       // **負の指数は分数で描く**（人は y^-1 ではなく 1/y と書く）。上付きで描くと、
       // 解析側が指数の "-" を二項の引き算と取り違える（実測: 1/y が y - 1 になった）。
       if (is_num(p) && p->num.neg()) {
         const E inv = p->num.n == -1 && p->num.d == 1 ? b : raw(Kind::Pow, {b, num(-p->num)});
-        return pn(PK::Frac, {present(num(Rat(1))), present(inv)});
+        return pn(PK::Frac, {present(num(Rat(1)), false, st), present(inv, false, st)});
       }
-      return pn(PK::Sup, {present(b, b->k == Kind::Add || b->k == Kind::Mul), present(p)});
+      return pn(PK::Sup, {present(b, b->k == Kind::Add || b->k == Kind::Mul, st),
+                          present(p, false, st)});
     }
     case Kind::Fn: {
       for (char c : e->name) row.push_back(pg(c, std::string(1, c)));
-      row.push_back(pn(PK::Paren, {present(e->kids.empty() ? num(Rat(0)) : e->kids[0])}));
+      row.push_back(
+          pn(PK::Paren, {present(e->kids.empty() ? num(Rat(0)) : e->kids[0], false, st)}));
       break;
     }
-    case Kind::Eq:
-      row.push_back(present(e->kids[0]));
-      row.push_back(pg('=', "="));
-      row.push_back(present(e->kids[1]));
+    case Kind::Rel:
+      // 演算子は name の 1 文字ずつを字として置く。"=" のときは以前と同じ絵になる。
+      // **"<=" は暫定で '<' '=' の 2 字**（本物の ≤ の字と、そのクラス追加は認識側の仕事。
+      // いまの検出器のクラス表に ≤ が無いので、勝手に字を増やすと学習データと食い違う）。
+      row.push_back(present(e->kids[0], false, st));
+      for (char c : e->name) row.push_back(pg(c == '-' ? st.minus_cp : c, std::string(1, c)));
+      row.push_back(present(e->kids[1], false, st));
+      break;
+    case Kind::Sys:
+      // 連立は暫定で 1 行に "," 区切り（本来は中括弧つきの複数行。行の切り分けと
+      // '{' のクラスが要るので、認識側と一緒に作る）
+      for (size_t i = 0; i < e->kids.size(); ++i) {
+        if (i) row.push_back(pg(',', ","));
+        row.push_back(present(e->kids[i], false, st));
+      }
       break;
   }
   P r = present_row(row);
@@ -213,6 +239,7 @@ struct Item {
   int x = 0, y = 0;           // ベースライン原点（線のときは矩形の左下）
   int scale_num = 1, scale_den = 1;   // 縮小率（上付きなど）
   int w = 0, h = 0;           // 線のときの矩形の大きさ
+  bool ital = false;          // イタリックの書体で描く
   int x0 = 0, y0 = 0, x1 = 0, y1 = 0; // 正解枠（フォント単位、y は上向き正）
 };
 
@@ -222,7 +249,7 @@ struct Layout {
 };
 
 // scale は「この部分木を何倍で描くか」を分数で持つ（整数演算のまま縮小するため）
-Layout lay(const Font& f, const P& p, int sn, int sd);
+Layout lay(const Font& f, const Font* fi, const P& p, int sn, int sd);
 
 inline int mulr(int v, int sn, int sd) { return (int)((long long)v * sn / sd); }
 
@@ -233,16 +260,34 @@ inline void shift(Layout& L, int dx, int dy) {
   }
 }
 
-inline Layout lay(const Font& f, const P& p, int sn, int sd) {
+// 別の upem を持つ書体を混ぜても崩れないように、字幅を「ローマン体のフォント単位」に直す
+inline int conv_upem(int v, int from_upem, int to_upem) {
+  return (int)((long long)v * to_upem / from_upem);
+}
+
+inline Layout lay(const Font& f, const Font* fi, const P& p, int sn, int sd) {
   Layout out;
   switch (p->k) {
     case PK::Glyph: {
-      const int adv = mulr(f.advance(p->cp), sn, sd);
+      // イタリックの字は第 2 書体から寸法を取り、**ローマン体のフォント単位に直す**
+      // （upem が違う書体を混ぜると、直さないと字だけ拡大縮小されてしまう）
+      const bool ital = p->ital && fi != nullptr;
+      const Font& g = ital ? *fi : f;
+      int adv = g.advance(p->cp);
       int x0, y0, x1, y1;
-      f.bbox(p->cp, &x0, &y0, &x1, &y1);
+      g.bbox(p->cp, &x0, &y0, &x1, &y1);
+      if (ital && g.upem != f.upem) {
+        adv = conv_upem(adv, g.upem, f.upem);
+        x0 = conv_upem(x0, g.upem, f.upem);
+        y0 = conv_upem(y0, g.upem, f.upem);
+        x1 = conv_upem(x1, g.upem, f.upem);
+        y1 = conv_upem(y1, g.upem, f.upem);
+      }
+      adv = mulr(adv, sn, sd);
       Item it;
       it.cls = p->cls;
       it.cp = p->cp;
+      it.ital = ital;
       it.x = 0; it.y = 0;
       it.scale_num = sn; it.scale_den = sd;
       it.x0 = mulr(x0, sn, sd); it.y0 = mulr(y0, sn, sd);
@@ -256,7 +301,7 @@ inline Layout lay(const Font& f, const P& p, int sn, int sd) {
     case PK::Row: {
       int x = 0, asc = 0, desc = 0;
       for (const P& c : p->kids) {
-        Layout L = lay(f, c, sn, sd);
+        Layout L = lay(f, fi, c, sn, sd);
         const bool op = c->k == PK::Glyph && (c->cls == "+" || c->cls == "-" || c->cls == "=");
         if (op) x += mulr(emk(f, K_OP_SPACE), sn, sd);
         shift(L, x, 0);
@@ -270,8 +315,8 @@ inline Layout lay(const Font& f, const P& p, int sn, int sd) {
       return out;
     }
     case PK::Sup: {
-      Layout b = lay(f, p->kids[0], sn, sd);
-      Layout e = lay(f, p->kids[1], sn * K_SUP_NUM, sd * K_SUP_DEN);
+      Layout b = lay(f, fi, p->kids[0], sn, sd);
+      Layout e = lay(f, fi, p->kids[1], sn * K_SUP_NUM, sd * K_SUP_DEN);
       const int rise = mulr(emk(f, K_SUP_SHIFT), sn, sd);
       shift(e, b.box.w, rise);
       out.items = b.items;
@@ -282,8 +327,8 @@ inline Layout lay(const Font& f, const P& p, int sn, int sd) {
       return out;
     }
     case PK::Frac: {
-      Layout nu = lay(f, p->kids[0], sn, sd);
-      Layout de = lay(f, p->kids[1], sn, sd);
+      Layout nu = lay(f, fi, p->kids[0], sn, sd);
+      Layout de = lay(f, fi, p->kids[1], sn, sd);
       const int pad = mulr(emk(f, K_FRAC_PAD), sn, sd);
       const int bar = mulr(emk(f, K_BAR), sn, sd);
       const int gap = mulr(emk(f, K_FRAC_GAP), sn, sd);
@@ -307,12 +352,12 @@ inline Layout lay(const Font& f, const P& p, int sn, int sd) {
       return out;
     }
     case PK::Sqrt: {
-      Layout in = lay(f, p->kids[0], sn, sd);
+      Layout in = lay(f, fi, p->kids[0], sn, sd);
       const int pad = mulr(emk(f, K_SQRT_PAD), sn, sd);
       const int radv = mulr(f.advance(0x221A), sn, sd);
       const int bar = mulr(emk(f, K_BAR), sn, sd);
       // 根号そのもの（記号）と、中身の上に伸びる横線
-      Layout rad = lay(f, pg(0x221A, "sqrt"), sn, sd);
+      Layout rad = lay(f, fi, pg(0x221A, "sqrt"), sn, sd);
       shift(in, radv + pad, 0);
       const int top = std::max(in.box.asc + pad, rad.box.asc);
       Item line;
@@ -330,9 +375,9 @@ inline Layout lay(const Font& f, const P& p, int sn, int sd) {
       return out;
     }
     case PK::Paren: {
-      Layout in = lay(f, p->kids[0], sn, sd);
-      Layout l = lay(f, pg('(', "("), sn, sd);
-      Layout r = lay(f, pg(')', ")"), sn, sd);
+      Layout in = lay(f, fi, p->kids[0], sn, sd);
+      Layout l = lay(f, fi, pg('(', "("), sn, sd);
+      Layout r = lay(f, fi, pg(')', ")"), sn, sd);
       shift(in, l.box.w, 0);
       shift(r, l.box.w + in.box.w, 0);
       out.items = l.items;

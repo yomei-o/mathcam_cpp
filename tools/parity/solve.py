@@ -33,11 +33,68 @@ FIXED = [
     "x^2 + x = 1", "(x + 1)(x - 2) = 0", "x^2/2 - 2 = 0", "x^2 + 1 = 0",
     "3 = 3", "4 = 5", "x = x", "x = x + 1",
     "y^2 - 9 = 0", "2t + 1 = 0",
+    # 不等式（負の数で割ると向きが変わる所を必ず通す）
+    "3x - 5 > 1", "-2x + 1 >= 7", "x/2 + 1 < x/3", "2x <= 6", "x > x + 1", "x < x + 1",
+    "-x > 3", "4 - x <= 0", "5 > 2", "0 >= 1",
+    # 連立方程式（加減法・代入法・そのまま解ける・解なし・無限）
+    "x + y = 5, 2x - y = 1", "2x + 3y = 8, 3x - 2y = -1", "y = 2x - 1, 3x + y = 9",
+    "2x = 6, x + y = 5", "x + y = 1, 2x + 2y = 5", "x + y = 1, 2x + 2y = 2",
+    "x/2 + y = 3, x - y = 1", "3a + b = 7, a - b = 1",
+    # 連立不等式（重なる・重ならない・1 点・片側だけ）
+    "2x > 4, x - 1 <= 4", "x > 5, x < 2", "x >= 2, x <= 2", "x > 1, x > 3",
+    "-x > -5, 2x >= 4",
 ]
 
 
+def gen_ineq(rng):
+    """一次不等式。**負の係数を必ず混ぜる**（向きが変わる手を通すため）。"""
+    v = rng.choice(["x", "x", "y", "t"])
+    op = rng.choice(["<", "<=", ">", ">="])
+    a = rng.randint(-9, 9) or -2
+    b = rng.randint(-9, 9)
+    c = rng.randint(-9, 9)
+    if rng.random() < 0.25:                          # 分数係数（分母を払う手が出る）
+        return "%s%s/%d + %d %s %d" % (a, v, rng.randint(2, 6), b, op, c)
+    if rng.random() < 0.2:                           # 右辺にも文字がある形
+        return "%d%s + %d %s %d%s + %d" % (a, v, b, op, rng.randint(-4, 4), v, c)
+    return "%d%s + %d %s %d" % (a, v, b, op, c)
+
+
+def gen_sys(rng):
+    """2 元 1 次の連立方程式。整数解・分数解・解なし・無限が混ざるように作る。"""
+    v1, v2 = rng.choice([("x", "y"), ("x", "y"), ("a", "b")])
+    a1, b1 = rng.randint(-5, 5) or 1, rng.randint(-5, 5) or 2
+    a2, b2 = rng.randint(-5, 5) or 3, rng.randint(-5, 5) or 1
+    if rng.random() < 0.12:                          # 係数が比例（解なし or 無限）
+        k = rng.choice([2, 3, -2])
+        a2, b2 = a1 * k, b1 * k
+    c1, c2 = rng.randint(-9, 9), rng.randint(-9, 9)
+    if rng.random() < 0.2:                           # 「y = …」の形（代入法が出る）
+        return "%s = %d%s + %d, %d%s + %d%s = %d" % (v2, a1, v1, c1, a2, v1, b2, v2, c2)
+    return "%d%s + %d%s = %d, %d%s + %d%s = %d" % (a1, v1, b1, v2, c1, a2, v1, b2, v2, c2)
+
+
+def gen_sys_ineq(rng):
+    """連立不等式（2 本）。重なる・重ならない・1 点が混ざる。"""
+    v = rng.choice(["x", "x", "y"])
+    op1 = rng.choice([">", ">="])
+    op2 = rng.choice(["<", "<="])
+    a1 = rng.randint(-4, 4) or 1
+    a2 = rng.randint(-4, 4) or -1
+    return "%d%s + %d %s %d, %d%s + %d %s %d" % (
+        a1, v, rng.randint(-6, 6), op1, rng.randint(-9, 9),
+        a2, v, rng.randint(-6, 6), op2, rng.randint(-9, 9))
+
+
 def gen(rng):
-    """解ける形の方程式。一次と二次を、係数の作り方を振って混ぜる。"""
+    """解ける形の式。方程式・不等式・連立をまとめて振る。"""
+    kind = rng.random()
+    if kind < 0.2:
+        return gen_ineq(rng)
+    if kind < 0.35:
+        return gen_sys(rng)
+    if kind < 0.45:
+        return gen_sys_ineq(rng)
     v = rng.choice(["x", "x", "x", "y", "t"])
     if rng.random() < 0.45:
         a = rng.randint(-9, 9) or 2
@@ -74,15 +131,7 @@ def py(src):
     for i, st in enumerate(s.steps, 1):
         out.append("%d. [%s] %s" % (i, st.rule, st.note))
         out.append("   %s" % X.to_latex(st.after))
-    if s.kind == "identity":
-        out.append("すべての値で成り立つ")
-    elif s.kind == "contradiction":
-        out.append("解なし（矛盾）")
-    elif not s.roots:
-        out.append("実数解なし")
-    else:
-        for r in s.roots:
-            out.append("%s = %s" % (s.var, X.to_latex(r)))
+    out.extend(S.answer_lines(s, True))
     return out
 
 

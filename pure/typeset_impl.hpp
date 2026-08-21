@@ -23,8 +23,9 @@ inline void Font::bbox(int cp, int* x0, int* y0, int* x1, int* y1) const {
 // フォントを読む。--font で渡されなければ、よくある場所を順に探す。
 // **フォントはリポジトリに入れない**（再配布の可否が font ごとに違う）。学習データを作る側が
 // 手元のフォントを指定する。Kaggle（Linux）には DejaVu がある。
-inline bool load_font(Font& f, const std::string& path_in, std::string* why = nullptr) {
-  static const char* kCandidates[] = {
+inline bool load_font(Font& f, const std::string& path_in, std::string* why = nullptr,
+                      bool italic = false) {
+  static const char* kRoman[] = {
       "fonts/math.ttf",
       "C:/Windows/Fonts/times.ttf",
       "C:/Windows/Fonts/georgia.ttf",
@@ -33,9 +34,21 @@ inline bool load_font(Font& f, const std::string& path_in, std::string* why = nu
       "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
       "/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf",
   };
+  // 数式のイタリック体。**教科書の変数はこれで組まれている**。Kaggle（Linux）には
+  // matplotlib が Computer Modern（cmmi10）と STIX を同梱しているので、そこも見る
+  // （cmmi10 は TeX の数式イタリックそのもので、教科書の字形に最も近い）。
+  static const char* kItalic[] = {
+      "fonts/math-italic.ttf",
+      "C:/Windows/Fonts/timesi.ttf",
+      "C:/Windows/Fonts/cambriai.ttf",
+      "C:/Windows/Fonts/georgiai.ttf",
+      "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Italic.ttf",
+      "/usr/share/fonts/truetype/liberation/LiberationSerif-Italic.ttf",
+  };
   std::vector<std::string> tries;
   if (!path_in.empty()) tries.push_back(path_in);
-  for (const char* c : kCandidates) tries.push_back(c);
+  if (italic) { for (const char* c : kItalic) tries.push_back(c); }
+  else { for (const char* c : kRoman) tries.push_back(c); }
 
   for (const std::string& p : tries) {
     FILE* fp = fopen(p.c_str(), "rb");
@@ -75,10 +88,11 @@ inline bool load_font(Font& f, const std::string& path_in, std::string* why = nu
 }
 
 // 組版して画素に落とす。返る箱は「画素・y は下向き正」で、認識器の正解枠にそのまま使える。
-inline Rendered render(const Font& f, const ex::E& e, int px) {
+inline Rendered render(const Font& f, const Font* fi, const ex::E& e, int px,
+                       const Style& st = Style()) {
   Rendered R;
-  const P p = present(e);
-  Layout L = lay(f, p, 1, 1);
+  const P p = present(e, false, st);
+  Layout L = lay(f, fi, p, 1, 1);
 
   // 実際に置かれたものの範囲を取る（layout の box より、描いた枠の合併のほうが正確）
   int minx = 0, maxx = L.box.w, miny = -L.box.desc, maxy = L.box.asc;
@@ -115,15 +129,16 @@ inline Rendered render(const Font& f, const ex::E& e, int px) {
       continue;
     }
     // 記号。stb に「その文字だけ」のビットマップを描かせて貼る
-    const float sc = (float)px / (float)f.upem * (float)it.scale_num / (float)it.scale_den;
+    const Font& g = (it.ital && fi) ? *fi : f;
+    const float sc = (float)px / (float)g.upem * (float)it.scale_num / (float)it.scale_den;
     int gx0 = 0, gy0 = 0, gx1 = 0, gy1 = 0;
-    stbtt_GetCodepointBitmapBox(f.info, it.cp, sc, sc, &gx0, &gy0, &gx1, &gy1);
+    stbtt_GetCodepointBitmapBox(g.info, it.cp, sc, sc, &gx0, &gy0, &gx1, &gy1);
     const int gw = gx1 - gx0, gh = gy1 - gy0;
     const int penx = to_px((long long)it.x + ox, px, f.upem);
     const int peny = to_px((long long)oy - it.y, px, f.upem);    // ベースラインの画素位置
     if (gw > 0 && gh > 0) {
       std::vector<unsigned char> bm((size_t)gw * gh, 0);
-      stbtt_MakeCodepointBitmap(f.info, bm.data(), gw, gh, gw, sc, sc, it.cp);
+      stbtt_MakeCodepointBitmap(g.info, bm.data(), gw, gh, gw, sc, sc, it.cp);
       for (int y = 0; y < gh; ++y)
         for (int x = 0; x < gw; ++x) {
           const int dx = penx + gx0 + x, dy = peny + gy0 + y;

@@ -60,6 +60,13 @@ def main():
     ap.add_argument("--imgsz", type=int, default=640)
     ap.add_argument("--batch", type=int, default=32)
     ap.add_argument("--lr", type=float, default=0.002)
+    # 実写の写真に寄せる幾何の増強（紙の傾き・机の斜め・手ぶれ）。**画像側の増強は
+    # Ultralytics に任せる**（自作の生成器で 2 言語ぶん書くより安く、枠の追随も面倒がない）
+    ap.add_argument("--perspective", type=float, default=0.0006)
+    ap.add_argument("--degrees", type=float, default=4.0)
+    ap.add_argument("--shear", type=float, default=3.0)
+    ap.add_argument("--scale", type=float, default=0.5)
+    ap.add_argument("--device", default="")
     ap.add_argument("--project", default="runs/det")
     ap.add_argument("--name", default="sym")
     ap.add_argument("--yaml", default="scratch/sym_det.yaml")
@@ -83,12 +90,16 @@ def main():
         names = read_classes(os.path.join(a.data[0], "classes.txt"))
         yaml_path = write_data_yaml(a.yaml, a.data, a.val or a.data[-1], names)
         model = YOLO(a.weights)
+        kw = {}
+        if a.device:
+            kw["device"] = a.device
         model.train(data=yaml_path, epochs=a.epochs, imgsz=a.imgsz, batch=a.batch, lr0=a.lr,
                     project=a.project, name=a.name, exist_ok=True,
                     # 数式は鏡像対称でないので反転は禁止。回転も小さく（位置関係が意味を持つ）
-                    fliplr=0.0, flipud=0.0, degrees=3.0, shear=2.0,
-                    scale=0.4, translate=0.1, mosaic=0.5, close_mosaic=10,
-                    hsv_h=0.015, hsv_s=0.5, hsv_v=0.4)
+                    fliplr=0.0, flipud=0.0, degrees=a.degrees, shear=a.shear,
+                    perspective=a.perspective,
+                    scale=a.scale, translate=0.1, mosaic=0.5, close_mosaic=10,
+                    hsv_h=0.015, hsv_s=0.5, hsv_v=0.4, **kw)
         # 重みの場所は trainer に聞く。project/name から組み立てると、Ultralytics の設定に
         # runs_dir が入っているときに外れる（姉妹リポがそれで export に失敗している）
         best = str(getattr(model.trainer, "best", "") or
