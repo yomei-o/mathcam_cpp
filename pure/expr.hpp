@@ -671,6 +671,12 @@ inline std::string to_latex(const E& e, int parent = 0) {
 // 認識器ができるまでの入口であり、テストの入口でもある。暗黙の掛け算（5x, 2(x+1)）を
 // 受けるのは、写真から読んだ式がそう書かれているから。
 
+// 関数として扱う名前（これ以外の名前 + 括弧は掛け算）
+inline bool is_fn_name(const std::string& n) {
+  return n == "sqrt" || n == "sin" || n == "cos" || n == "tan" || n == "ln" || n == "exp" ||
+         n == "abs";
+}
+
 struct Parser {
   std::string s;
   size_t i = 0;
@@ -770,7 +776,10 @@ struct Parser {
     if (isalpha((unsigned char)s[i])) {
       std::string name;
       while (i < s.size() && isalnum((unsigned char)s[i])) name += s[i++];
-      if (peek('(')) {
+      // **関数呼び出しは名前が関数のときだけ**。そうしないと `2x(x - 1)` の `x(...)` が
+      // 「関数 x の呼び出し」になり、`2x(x-1) = 5` が展開できない式として残る
+      // （実写の写真でこの形が出て、答えが出せなかった）。数式では変数のあとの括弧は掛け算。
+      if (peek('(') && is_fn_name(name)) {
         eat('(');
         std::vector<E> args{parse_add()};
         while (eat(',')) args.push_back(parse_add());

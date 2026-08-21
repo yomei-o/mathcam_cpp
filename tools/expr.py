@@ -649,6 +649,14 @@ def to_latex(e):
 # ---------------------------------------------------------------- 構文解析
 
 
+FN_NAMES = ("sqrt", "sin", "cos", "tan", "ln", "exp", "abs")
+
+
+def is_fn_name(n):
+    """関数として扱う名前（これ以外の名前 + 括弧は掛け算）。"""
+    return n in FN_NAMES
+
+
 class Parser:
     """C++ 側の Parser と同じ文法。暗黙の掛け算（5x, 2(x+1)）を受けるのは、
     写真から読んだ式がそう書かれているから。"""
@@ -775,7 +783,9 @@ class Parser:
             while self.i < len(self.s) and self.s[self.i].isalnum():
                 name += self.s[self.i]
                 self.i += 1
-            if self.peek("("):
+            # **関数呼び出しは名前が関数のときだけ**。そうしないと `2x(x - 1)` の `x(...)` が
+            # 「関数 x の呼び出し」になる（実写の写真でこの形が出て、答えが出せなかった）。
+            if self.peek("(") and is_fn_name(name):
                 self.eat("(")
                 args = [self.parse_add()]
                 while self.eat(","):
