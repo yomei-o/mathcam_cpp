@@ -18,7 +18,7 @@ CAS まで完成。微積分・手書きは未着手。
 | round 5（劣化なし data6、39 クラス）epoch 3/6/9/12/18 | 6 / 5 / 5 / 8 / 3 | 合成 val は最後まで mAP50 0.993 |
 | **round 6（劣化あり data7、39 クラス）epoch 0** | 19 | 6/11, 12/12, 0/2, 1/2 |
 | **round 6 epoch 3（いま出荷している `models/sym_det_v4.onnx`、39 クラス）** | **22** | 7/11, 12/12, 1/2, **2/2** |
-| round 6 epoch 6 / 9 | 18 / 19 | 劣化ありでも epoch 3 が頂点だった |
+| round 6 epoch 0 / 6 / 9 / 12 | 19 / 19 / 19 / 20 | **同じコードで測り直した値**。epoch 3 が頂点 |
 
 「18 → 19」は学習ではなく**構造で直した**ぶん（`pl::fix_parens` と上付き判定の締め）。
 残る失敗は image0 の文字の取り違え（a/b/p が x/t になる）と image2 の 2 問（小数点と
@@ -224,6 +224,7 @@ round 7 の順番待ち。
 | kbridge の `/upload` が先頭の `/` を落とす | `/kaggle/working/...` に送ったつもりが `/kaggle/working/kaggle/working/...` に落ちる。**応答は `ok:true`** なので、そのままビルドして「直したのに直らない」になる | 送り先は**相対パス**で渡す（`mathcam_cpp/pure/x.hpp`）。送った後に `md5sum` か `grep -c` で着いたか確かめる |
 | Git Bash が `/kaggle/...` を書き換える | 引数が `C:/Program Files/Git/kaggle/...` になる（MSYS のパス変換）。これも `ok:true` が返る | HTTP を直接叩く（JSON の中身は変換されない）。`MSYS_NO_PATHCONV=1` は**先頭の / を落とす**ので当てにならない |
 | Bash の heredoc がバックスラッシュを潰す | `printf("...\n")` を含むパッチを heredoc で流すと、実改行が入って C++ が構文エラー。**今日 3 回踏んだ** | バックスラッシュを含むパッチは Write/Edit ツールで書く。heredoc は「バックスラッシュが 1 文字も無いとき」だけ |
+| **/download が古い中身を返す** | 候補の重みを毎回 `models/cand_epoch12.onnx` という同じ名前で落としていたら、round 5 の重みが返ってきて、それを round 6 の値として記録した（実写 8/27。正しくは 20/27）。**サイズまで同じ**なので気付けない | 名前に run を入れる（`cand_runs7_sym7_epoch12.onnx`）。落としたあと **md5 を遠隔と突き合わせる**（`scratch/pick_checkpoint.py` はそうした） |
 | 混んでいる Kaggle で 502 | `/job` や `/sh` が 502 Bad Gateway を返す。**セッションは生きている** | 数十秒あけて再試行。ジョブを作る前に一覧を見て、**二重に起動しない**ことを確かめる |
 
 ## 環境
