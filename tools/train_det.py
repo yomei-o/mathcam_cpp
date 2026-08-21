@@ -67,6 +67,10 @@ def main():
     ap.add_argument("--shear", type=float, default=3.0)
     ap.add_argument("--scale", type=float, default=0.5)
     ap.add_argument("--device", default="")
+    # **合成の val で best を選ぶと実写で悪くなる**（実測: 40 epoch のモデルは 13 epoch の
+    # モデルより実写で明らかに悪い。合成 val は 100% のままなので気付けない）。
+    # 途中の重みを残して、**実写の正解表で選ぶ**ために使う。
+    ap.add_argument("--save-period", dest="save_period", type=int, default=-1)
     ap.add_argument("--project", default="runs/det")
     ap.add_argument("--name", default="sym")
     ap.add_argument("--yaml", default="scratch/sym_det.yaml")
@@ -93,6 +97,8 @@ def main():
         kw = {}
         if a.device:
             kw["device"] = a.device
+        if a.save_period > 0:
+            kw["save_period"] = a.save_period
         model.train(data=yaml_path, epochs=a.epochs, imgsz=a.imgsz, batch=a.batch, lr0=a.lr,
                     project=a.project, name=a.name, exist_ok=True,
                     # 数式は鏡像対称でないので反転は禁止。回転も小さく（位置関係が意味を持つ）

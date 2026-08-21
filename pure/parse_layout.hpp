@@ -98,6 +98,78 @@ inline ex::E mk_neg(const ex::E& a) {
   return raw_mode() ? ex::raw(ex::Kind::Fn, {a}, "op_neg") : ex::neg(a);
 }
 
+// ---------------------------------------------------------------- 横棒を直す
+//
+// 検出器から見ると、**マイナス（U+2212）・分数線・根号の上線・= の 2 本**はどれも
+// 「細長い横棒」で、字の形だけでは区別できない（実測: 実写で `=` が sqrt 2 個、
+// マイナスが sqrt や frac になった）。見分けるのは**構造**の仕事:
+//
+//   * 同じ x の範囲に上下 2 本 -> `=`
+//   * 上下に中身がある 1 本 -> 分数線（collapse_one が判定する）
+//   * 下に中身がある + 左に根号の字 -> 根号の上線（同上）
+//   * それ以外の 1 本 -> マイナス
+//
+// ここでは「2 本 -> =」と「同じ棒が 2 つに割れて検出された」だけを直す。残りは collapse_one。
+inline bool bar_like(const Sym& s) {
+  return !s.atom && (s.cls == "-" || s.cls == "frac" || s.cls == "sqrt" || s.cls == "=") &&
+         s.w() >= s.h() * 3;
+}
+
+inline void fix_bars(std::vector<Sym>& v, int h_ref) {
+  // 1) 同じ棒が 2 つに割れて検出されたものをつなぐ（縦の位置がほぼ同じで、横が重なる）
+  for (size_t i = 0; i < v.size(); ++i) {
+    if (!bar_like(v[i])) continue;
+    for (size_t j = i + 1; j < v.size();) {
+      if (!bar_like(v[j])) { ++j; continue; }
+      const int dy = std::abs(v[i].cy() - v[j].cy());
+      const int ov = std::min(v[i].x1, v[j].x1) - std::max(v[i].x0, v[j].x0);
+      const int shorter = std::min(v[i].w(), v[j].w());
+      if (dy * 100 <= std::max(4, h_ref * 12) && ov * 100 > shorter * 40) {
+        v[i].x0 = std::min(v[i].x0, v[j].x0);
+        v[i].x1 = std::max(v[i].x1, v[j].x1);
+        v[i].y0 = std::min(v[i].y0, v[j].y0);
+        v[i].y1 = std::max(v[i].y1, v[j].y1);
+        v.erase(v.begin() + (long)j);
+        continue;
+      }
+      ++j;
+    }
+  }
+  // 2) 同じ x に上下 2 本あって、**間に何も無く、長さもほぼ同じ**なら `=`。
+  //    条件を緩くすると入れ子の分数（分子が分数）を = と読んでしまう（実測で 4 件壊した）。
+  for (size_t i = 0; i < v.size(); ++i) {
+    if (!bar_like(v[i])) continue;
+    for (size_t j = i + 1; j < v.size(); ++j) {
+      if (!bar_like(v[j])) continue;
+      const int ov = std::min(v[i].x1, v[j].x1) - std::max(v[i].x0, v[j].x0);
+      const int shorter = std::min(v[i].w(), v[j].w());
+      const int longer = std::max(v[i].w(), v[j].w());
+      const int dy = std::abs(v[i].cy() - v[j].cy());
+      const int lo = std::max(v[i].x0, v[j].x0), hi = std::min(v[i].x1, v[j].x1);
+      const int top = std::min(v[i].cy(), v[j].cy()), bot = std::max(v[i].cy(), v[j].cy());
+      bool between = false;                            // 2 本の間に字があるか（分数の分子など）
+      for (size_t k = 0; k < v.size(); ++k) {
+        if (k == i || k == j) continue;
+        if (v[k].cx() >= lo && v[k].cx() <= hi && v[k].cy() > top && v[k].cy() < bot)
+          between = true;
+      }
+      if (ov * 100 > shorter * 60 && shorter * 100 >= longer * 70 && !between && dy > 0 &&
+          dy * 100 <= std::max(8, h_ref * 45)) {
+        Sym eq = v[i];
+        eq.cls = "=";
+        eq.x0 = std::min(v[i].x0, v[j].x0);
+        eq.x1 = std::max(v[i].x1, v[j].x1);
+        eq.y0 = std::min(v[i].y0, v[j].y0);
+        eq.y1 = std::max(v[i].y1, v[j].y1);
+        eq.base_y = eq.y1;
+        v[i] = eq;
+        v.erase(v.begin() + (long)j);
+        break;
+      }
+    }
+  }
+}
+
 ex::E parse_flat(std::vector<Sym> v, std::string* why);
 
 inline Sym make_atom(const ex::E& e, int x0, int y0, int x1, int y1, int base_y) {
@@ -191,7 +263,14 @@ inline bool collapse_one(std::vector<Sym>& v, std::string* why) {
       ux0 = std::min(ux0, s.x0); uy0 = std::min(uy0, s.y0);
       ux1 = std::max(ux1, s.x1); uy1 = std::max(uy1, s.y1);
     }
-    if (up.empty() || down.empty()) { *why = "分数の上か下が空です"; return false; }
+    // **上か下に何も無い横棒はマイナス**。検出器から見ると分数線とマイナス（U+2212）は
+    // どちらも「細長い横棒」で、字だけでは区別できない（実測: 実写の `x^2 − 6x + 5 = 0` で
+    // マイナスが frac になり、解析が「分数の上か下が空です」で落ちた）。
+    // 見分けるのは**構造**の仕事: 分数線は上下に中身がある。
+    if (up.empty() || down.empty()) {
+      v[(size_t)fi].cls = "-";
+      return true;                                    // ラベルを直してもう一度回す
+    }
     const E nu = parse_flat(up, why);
     if (!why->empty()) return false;
     const E de = parse_flat(down, why);
@@ -222,7 +301,12 @@ inline bool collapse_one(std::vector<Sym>& v, std::string* why) {
       ux0 = std::min(ux0, s.x0); uy0 = std::min(uy0, s.y0);
       ux1 = std::max(ux1, s.x1); uy1 = std::max(uy1, s.y1);
     }
-    if (in.empty()) { *why = "根号の中身がありません"; return false; }
+    // 根号の上線も「細長い横棒」なので、マイナスと取り違えられる（実測: 実写でマイナスが
+    // sqrt になった）。**下に何も無い上線はマイナス**として読み直す。
+    if (in.empty()) {
+      v[(size_t)bi].cls = "-";
+      return true;
+    }
     // 根号記号そのもの（上線の左にある狭い "sqrt"）を消す。
     // 条件を「右端が上線の左端より左」にしていたら、字形が上線に食い込む場合に消えず、
     // 記号が余って「解釈できない記号: sqrt」で落ちた（実測: sqrt((7)/(48))）。
@@ -370,6 +454,10 @@ inline bool is_sup(const Sym& base, const Sym& s, int h_ref) {
 inline ex::E parse_flat(std::vector<Sym> v, std::string* why) {
   using namespace ex;
   if (v.empty()) { *why = "記号がありません"; return num(Rat(0)); }
+  std::sort(v.begin(), v.end(), by_x);
+
+  // 0) 横棒を直す（= が 2 本の棒に、マイナスが分数線や根号の上線に化けるのを構造で戻す）
+  fix_bars(v, median_h(v));
   std::sort(v.begin(), v.end(), by_x);
 
   // 1) 構造を全部畳む（外側から内側へ）
