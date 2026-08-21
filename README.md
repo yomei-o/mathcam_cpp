@@ -94,6 +94,8 @@ python tools/train_det.py --export-only --weights runs/.../best.pt  # NMS なし
 
 ## ブラウザで動かす（WASM デモ）
 
+**公開版: https://yomei-o.github.io/mathcam_cpp/wasm/**
+
 ```sh
 sh build/emcc.sh wasm/mathcam_wasm.cpp -o wasm/mathcam.js
 python -m http.server 8000          # -> http://127.0.0.1:8000/wasm/
