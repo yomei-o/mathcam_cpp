@@ -519,6 +519,21 @@ inline void fix_parens(std::vector<Sym>& v) {
   }
 }
 
+// **相手のいない演算子は落とす。** プリントの答え欄（四角）が `÷` や `+` として検出される
+// ことがあり、`3.7 × (2 - 0.4) + 0.96 ÷ 1.2 = □` の右辺に 1 個だけ残って解析が落ちた
+// （実測: 「解釈できない記号: div」）。合成データには末尾の演算子が出ないので、ここは実写専用。
+// 先頭の `-` は単項マイナスなので残す。
+inline void strip_dangling(std::vector<Sym>& v) {
+  const auto binary_only = [](const std::string& c) {
+    return c == "+" || c == "times" || c == "div" || c == "dot";
+  };
+  while (!v.empty() && !v.back().atom &&
+         (binary_only(v.back().cls) || v.back().cls == "-"))
+    v.pop_back();
+  while (!v.empty() && !v.front().atom && binary_only(v.front().cls))
+    v.erase(v.begin());
+}
+
 inline ex::E parse_flat(std::vector<Sym> v, std::string* why) {
   using namespace ex;
   if (v.empty()) { *why = "記号がありません"; return num(Rat(0)); }
@@ -529,6 +544,9 @@ inline ex::E parse_flat(std::vector<Sym> v, std::string* why) {
   std::sort(v.begin(), v.end(), by_x);
   // 0.5) 背が高くて細い数字は括弧（形では迷うが、大きさの比では迷わない）
   fix_parens(v);
+  // 0.6) 相手のいない演算子を落とす（答え欄の四角が演算子として出ることがある）
+  strip_dangling(v);
+  if (v.empty()) { *why = "記号がありません"; return num(Rat(0)); }
 
   // 1) 構造を全部畳む（外側から内側へ）
   while (collapse_one(v, why)) {
@@ -544,6 +562,8 @@ inline ex::E parse_flat(std::vector<Sym> v, std::string* why) {
   for (size_t i = 0; i < v.size(); ++i)
     if (!v[i].atom && v[i].cls == "=") {
       std::vector<Sym> l(v.begin(), v.begin() + (long)i), r(v.begin() + (long)i + 1, v.end());
+      strip_dangling(l);
+      strip_dangling(r);
       if (r.empty() && !l.empty()) return parse_flat(l, why);
       if (l.empty() && !r.empty()) return parse_flat(r, why);
       const E a = parse_flat(l, why);

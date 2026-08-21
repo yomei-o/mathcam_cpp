@@ -472,6 +472,20 @@ def fix_parens(v):
     return v
 
 
+def strip_dangling(v):
+    """**相手のいない演算子は落とす**（C++ の strip_dangling と同じ規則）。
+
+    プリントの答え欄（四角）が `÷` や `+` として検出され、`… = □` の右辺に 1 個だけ残って
+    解析が落ちた（実測: 「解釈できない記号: div」）。先頭の `-` は単項なので残す。
+    """
+    binary_only = ("+", "times", "div", "dot")
+    while v and (not v[-1].atom) and (v[-1].cls in binary_only or v[-1].cls == "-"):
+        v.pop()
+    while v and (not v[0].atom) and v[0].cls in binary_only:
+        v.pop(0)
+    return v
+
+
 def parse_flat(v_in):
     v = sorted((s.copy() for s in v_in), key=lambda s: s.x0)
     if not v:
@@ -482,6 +496,10 @@ def parse_flat(v_in):
     v.sort(key=lambda s: s.x0)
     # 0.5) 背が高くて細い数字は括弧（形では迷うが、大きさの比では迷わない）
     v = fix_parens(v)
+    # 0.6) 相手のいない演算子を落とす（答え欄の四角が演算子として出ることがある）
+    v = strip_dangling(v)
+    if not v:
+        raise Fail("記号がありません")
 
     # 1) 構造を全部畳む（外側から内側へ）
     while True:
@@ -496,7 +514,7 @@ def parse_flat(v_in):
     #    答えを書く四角は読まないので、右辺には何も残らない）
     for i, s in enumerate(v):
         if not s.atom and s.cls == "=":
-            l, r = v[:i], v[i + 1:]
+            l, r = strip_dangling(v[:i]), strip_dangling(v[i + 1:])
             if not r and l:
                 return parse_flat(l)
             if not l and r:
