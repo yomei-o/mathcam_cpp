@@ -1,0 +1,6 @@
+# バイナリを commit するので改行変換をさせない（ONNX に \r\n が入ったら静かに壊れる）
+*.onnx binary
+*.wasm binary
+*.rgba binary
+*.pth binary
+*.pt binary

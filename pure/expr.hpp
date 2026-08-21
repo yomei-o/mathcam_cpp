@@ -1,0 +1,663 @@
+// 数式そのもの — 木・厳密有理数・正規形・印字・構文解析。
+//
+// このファイルが決めることが、後の全部の契約になる:
+//
+//   * 認識側（写真 -> 記号 -> レイアウト解析）の出力はこの木である。
+//   * 解く側（一次・二次方程式、将来の微分積分）はこの木を書き換える。
+//   * 手順表示は「名前のついた書き換え」を記録したものである。
+//
+// 設計判断とその理由:
+//
+//   * **数は厳密有理数**（int64 の分子・分母、既約、分母は正）。1/3 を 0.333 にしたら
+//     手順表示が嘘になる。double は最後の表示でしか使わない。
+//   * **Add と Mul は可変長**（入れ子を平らにする）。正規形で同類項をまとめるのに必要で、
+//     二項木のままだと (a+b)+c と a+(b+c) が別物になる。
+//   * **木は不変で共有する**（shared_ptr<const Node>）。書き換えは新しい木を作る。
+//     手順表示は「各段の木」を保持するので、破壊的更新だと過去の段が壊れる。
+//   * **正規形は全順序でソートする**。そうすると「同じ式か」が構造の一致で判定でき、
+//     x + 1 と 1 + x が同一になる。順序は決定的（種類 -> 名前 -> 子の数 -> 子）。
+//   * **簡約は手順に出さない**。手順に出すのは solve が選んだ規則（「両辺から 3 を引く」
+//     「解の公式」）だけ。正規化の 1 手 1 手を見せると、人間には読めないものになる。
+//     Photomath 系アプリの価値は「読める手順」なので、ここは意図的に分けてある。
+#pragma once
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <cstdio>
+#include <memory>
+#include <numeric>
+#include <string>
+#include <vector>
+
+namespace ex {
+
+// ---------------------------------------------------------------- 厳密有理数
+
+struct Rat {
+  long long n = 0, d = 1;
+
+  Rat() = default;
+  Rat(long long v) : n(v), d(1) {}
+  Rat(long long num, long long den) : n(num), d(den) { norm(); }
+
+  void norm() {
+    if (d == 0) { n = 0; d = 1; return; }          // 0 除算は 0 に落とす（呼ぶ側で弾く）
+    if (d < 0) { n = -n; d = -d; }
+    long long g = std::gcd(n < 0 ? -n : n, d);
+    if (g > 1) { n /= g; d /= g; }
+    if (n == 0) d = 1;
+  }
+  bool is_int() const { return d == 1; }
+  bool is_zero() const { return n == 0; }
+  bool is_one() const { return n == 1 && d == 1; }
+  bool neg() const { return n < 0; }
+  double f() const { return (double)n / (double)d; }
+
+  Rat operator+(const Rat& o) const { return Rat(n * o.d + o.n * d, d * o.d); }
+  Rat operator-(const Rat& o) const { return Rat(n * o.d - o.n * d, d * o.d); }
+  Rat operator*(const Rat& o) const { return Rat(n * o.n, d * o.d); }
+  Rat operator/(const Rat& o) const { return Rat(n * o.d, d * o.n); }
+  Rat operator-() const { Rat r; r.n = -n; r.d = d; return r; }
+  bool operator==(const Rat& o) const { return n == o.n && d == o.d; }
+  bool operator<(const Rat& o) const { return n * o.d < o.n * d; }
+
+  std::string str() const {
+    char b[64];
+    if (d == 1) snprintf(b, sizeof b, "%lld", n);
+    else snprintf(b, sizeof b, "%lld/%lld", n, d);
+    return b;
+  }
+};
+
+// 整数の冪。指数が負や分数のときは呼ばない（呼ぶ側が Pow のまま残す）
+inline Rat rpow(const Rat& a, long long e) {
+  if (e < 0) return Rat(1) / rpow(a, -e);
+  Rat r(1), b = a;
+  for (long long i = 0; i < e; ++i) r = r * b;
+  return r;
+}
+
+// ---------------------------------------------------------------- 木
+
+enum class Kind { Num, Sym, Add, Mul, Pow, Fn, Eq };
+
+struct Node;
+using E = std::shared_ptr<const Node>;
+
+struct Node {
+  Kind k = Kind::Num;
+  Rat num;                    // Num
+  std::string name;           // Sym の変数名 / Fn の関数名
+  std::vector<E> kids;        // Add/Mul は 2 個以上、Pow と Eq は 2 個、Fn は引数
+};
+
+inline E mk(Kind k) { auto n = std::make_shared<Node>(); n->k = k; return n; }
+inline E num(const Rat& r) { auto n = std::make_shared<Node>(); n->k = Kind::Num; n->num = r; return n; }
+inline E num(long long v) { return num(Rat(v)); }
+inline E sym(const std::string& s) {
+  auto n = std::make_shared<Node>(); n->k = Kind::Sym; n->name = s; return n;
+}
+inline E raw(Kind k, std::vector<E> kids, const std::string& name = "") {
+  auto n = std::make_shared<Node>();
+  n->k = k; n->name = name; n->kids = std::move(kids);
+  return n;
+}
+
+inline bool is_num(const E& e) { return e->k == Kind::Num; }
+inline bool is_sym(const E& e) { return e->k == Kind::Sym; }
+
+// ---------------------------------------------------------------- 全順序
+
+// 決定的な順序。正規形のソートに使い、同じ式が構造として一致するようにする。
+inline int cmp(const E& a, const E& b) {
+  if (a->k != b->k) return (int)a->k < (int)b->k ? -1 : 1;
+  switch (a->k) {
+    case Kind::Num:
+      if (a->num == b->num) return 0;
+      return a->num < b->num ? -1 : 1;
+    case Kind::Sym:
+      return a->name < b->name ? -1 : (a->name == b->name ? 0 : 1);
+    default: {
+      if (a->name != b->name) return a->name < b->name ? -1 : 1;
+      if (a->kids.size() != b->kids.size()) return a->kids.size() < b->kids.size() ? -1 : 1;
+      for (size_t i = 0; i < a->kids.size(); ++i) {
+        int c = cmp(a->kids[i], b->kids[i]);
+        if (c) return c;
+      }
+      return 0;
+    }
+  }
+}
+inline bool equal(const E& a, const E& b) { return cmp(a, b) == 0; }
+
+// ---------------------------------------------------------------- 正規形
+
+E simp(const E& e);
+
+inline void flatten(Kind k, const E& e, std::vector<E>& out) {
+  if (e->k == k) { for (const E& c : e->kids) flatten(k, c, out); }
+  else out.push_back(e);
+}
+
+// 項を「係数 × 残り」に割る（同類項をまとめるため）
+inline void split_coeff(const E& t, Rat& c, E& rest) {
+  c = Rat(1);
+  if (t->k == Kind::Num) { c = t->num; rest = num(Rat(1)); return; }
+  if (t->k != Kind::Mul) { rest = t; return; }
+  std::vector<E> others;
+  for (const E& f : t->kids) {
+    if (f->k == Kind::Num) c = c * f->num;
+    else others.push_back(f);
+  }
+  if (others.empty()) rest = num(Rat(1));
+  else if (others.size() == 1) rest = others[0];
+  else rest = raw(Kind::Mul, others);
+}
+
+// 因子を「底 ^ 指数」に割る（同じ底をまとめるため）
+inline void split_pow(const E& f, E& base, E& expo) {
+  if (f->k == Kind::Pow) { base = f->kids[0]; expo = f->kids[1]; }
+  else { base = f; expo = num(Rat(1)); }
+}
+
+inline E add_n(std::vector<E> xs) {
+  std::vector<E> flat;
+  for (E& x : xs) flatten(Kind::Add, simp(x), flat);
+  Rat konst(0);
+  std::vector<std::pair<E, Rat>> terms;              // 残り -> 係数の合計
+  for (const E& t : flat) {
+    if (t->k == Kind::Num) { konst = konst + t->num; continue; }
+    Rat c; E rest;
+    split_coeff(t, c, rest);
+    bool merged = false;
+    for (auto& pr : terms)
+      if (equal(pr.first, rest)) { pr.second = pr.second + c; merged = true; break; }
+    if (!merged) terms.emplace_back(rest, c);
+  }
+  std::vector<E> out;
+  for (auto& pr : terms) {
+    if (pr.second.is_zero()) continue;
+    if (pr.second.is_one()) out.push_back(pr.first);
+    else out.push_back(simp(raw(Kind::Mul, {num(pr.second), pr.first})));
+  }
+  if (!konst.is_zero()) out.push_back(num(konst));
+  if (out.empty()) return num(Rat(0));
+  if (out.size() == 1) return out[0];
+  std::sort(out.begin(), out.end(), [](const E& a, const E& b) { return cmp(a, b) < 0; });
+  return raw(Kind::Add, out);
+}
+
+inline E mul_n(std::vector<E> xs) {
+  std::vector<E> flat;
+  for (E& x : xs) flatten(Kind::Mul, simp(x), flat);
+  Rat coef(1);
+  std::vector<std::pair<E, std::vector<E>>> bases;   // 底 -> 指数たち
+  for (const E& f : flat) {
+    if (f->k == Kind::Num) {
+      coef = coef * f->num;
+      if (coef.is_zero()) return num(Rat(0));
+      continue;
+    }
+    E b, p;
+    split_pow(f, b, p);
+    bool merged = false;
+    for (auto& pr : bases)
+      if (equal(pr.first, b)) { pr.second.push_back(p); merged = true; break; }
+    if (!merged) bases.emplace_back(b, std::vector<E>{p});
+  }
+  std::vector<E> out;
+  for (auto& pr : bases) {
+    E e = pr.second.size() == 1 ? pr.second[0] : add_n(pr.second);
+    if (is_num(e) && e->num.is_zero()) continue;                 // x^0 = 1
+    if (is_num(e) && e->num.is_one()) { out.push_back(pr.first); continue; }
+    out.push_back(raw(Kind::Pow, {pr.first, e}));
+  }
+  if (out.empty()) return num(coef);
+  if (!coef.is_one()) out.insert(out.begin(), num(coef));
+  if (out.size() == 1) return out[0];
+  std::sort(out.begin(), out.end(), [](const E& a, const E& b) { return cmp(a, b) < 0; });
+  return raw(Kind::Mul, out);
+}
+
+inline E pow_e(const E& b_in, const E& e_in) {
+  E b = simp(b_in), p = simp(e_in);
+  if (is_num(p)) {
+    if (p->num.is_zero()) return num(Rat(1));
+    if (p->num.is_one()) return b;
+    if (is_num(b) && p->num.is_int()) {
+      const long long e = p->num.n;
+      if (e > -32 && e < 32 && !(b->num.is_zero() && e < 0)) return num(rpow(b->num, e));
+    }
+    // 分数指数でも「厳密に閉じるなら」畳む: sqrt(4) は 2 であって 4^(1/2) のまま残す理由がない。
+    // 閉じないもの（sqrt(2)）は Pow のまま置く。整数根が取れるかを実際に試して確かめる。
+    if (is_num(b) && !p->num.is_int() && b->num.d != 0) {
+      const long long root = p->num.d, up = p->num.n;
+      if (root > 1 && root <= 8 && up > -32 && up < 32 && !b->num.neg()) {
+        auto iroot = [](long long v, long long k, long long& out) {
+          if (v < 0) return false;
+          long long r = (long long)std::llround(std::pow((double)v, 1.0 / (double)k));
+          for (long long c = r > 2 ? r - 2 : 0; c <= r + 2; ++c) {
+            long long q = 1;
+            bool ovf = false;
+            for (long long i = 0; i < k; ++i) { q *= c; if (q > (1LL << 40)) { ovf = true; break; } }
+            if (!ovf && q == v) { out = c; return true; }
+          }
+          return false;
+        };
+        long long rn = 0, rd = 0;
+        if (iroot(b->num.n, root, rn) && iroot(b->num.d, root, rd))
+          return num(rpow(Rat(rn, rd), up));
+      }
+    }
+  }
+  if (b->k == Kind::Pow) {                                      // (a^m)^n = a^(mn)
+    const E& in = b->kids[1];
+    if (is_num(in) && is_num(p) && in->num.is_int() && p->num.is_int())
+      return pow_e(b->kids[0], num(in->num * p->num));
+  }
+  if (b->k == Kind::Mul && is_num(p) && p->num.is_int()) {       // (ab)^n = a^n b^n
+    std::vector<E> fs;
+    for (const E& f : b->kids) fs.push_back(pow_e(f, p));
+    return mul_n(fs);
+  }
+  return raw(Kind::Pow, {b, p});
+}
+
+// 関数。数値で閉じるものだけ畳む（sqrt(4)=2 など）。それ以外は Fn のまま。
+inline E fn_e(const std::string& name, std::vector<E> args) {
+  for (E& a : args) a = simp(a);
+  if (name == "sqrt" && args.size() == 1) return pow_e(args[0], num(Rat(1, 2)));
+  if (args.size() == 1 && is_num(args[0])) {
+    const Rat& r = args[0]->num;
+    if (name == "abs") return num(r.neg() ? -r : r);
+    if (name == "ln" && r.is_one()) return num(Rat(0));
+    if ((name == "sin" || name == "tan") && r.is_zero()) return num(Rat(0));
+    if (name == "cos" && r.is_zero()) return num(Rat(1));
+    if (name == "exp" && r.is_zero()) return num(Rat(1));
+  }
+  return raw(Kind::Fn, args, name);
+}
+
+inline E simp(const E& e) {
+  switch (e->k) {
+    case Kind::Num:
+    case Kind::Sym:
+      return e;
+    case Kind::Add: return add_n(e->kids);
+    case Kind::Mul: return mul_n(e->kids);
+    case Kind::Pow: return pow_e(e->kids[0], e->kids[1]);
+    case Kind::Fn: return fn_e(e->name, e->kids);
+    case Kind::Eq: return raw(Kind::Eq, {simp(e->kids[0]), simp(e->kids[1])});
+  }
+  return e;
+}
+
+// 使いやすい別名（呼ぶ側は simp 済みの木を受け取る）
+inline E add(const E& a, const E& b) { return add_n({a, b}); }
+inline E sub(const E& a, const E& b) { return add_n({a, mul_n({num(Rat(-1)), b})}); }
+inline E mul(const E& a, const E& b) { return mul_n({a, b}); }
+inline E div(const E& a, const E& b) { return mul_n({a, pow_e(b, num(Rat(-1)))}); }
+inline E neg(const E& a) { return mul_n({num(Rat(-1)), a}); }
+inline E eq(const E& a, const E& b) { return raw(Kind::Eq, {simp(a), simp(b)}); }
+
+// ---------------------------------------------------------------- 展開
+//
+// 分配法則を simp に入れない理由: (x+1)^100 のような式で爆発するし、「くくった形」を保ちたい
+// 場面（因数分解の手順表示）で邪魔になる。展開が必要なのは
+//   * 同類項をまとめて ax + b = 0 の形にするとき（solve）
+//   * 人が期待する「答えの形」にするとき（eval）
+// なので、そのときだけ明示的に呼ぶ。指数は整数かつ小さいものだけ展開する。
+inline E expand(const E& e);
+
+inline E expand_mul(std::vector<E> fs) {
+  std::vector<E> sum{num(Rat(1))};                 // 部分積の集まり（=和の項）
+  for (const E& f : fs) {
+    std::vector<E> terms;
+    if (f->k == Kind::Add) terms = f->kids;
+    else terms.push_back(f);
+    std::vector<E> next;
+    next.reserve(sum.size() * terms.size());
+    for (const E& a : sum)
+      for (const E& b : terms) next.push_back(mul_n({a, b}));
+    sum = std::move(next);
+  }
+  return add_n(sum);
+}
+
+inline E expand(const E& e) {
+  switch (e->k) {
+    case Kind::Num:
+    case Kind::Sym:
+      return e;
+    case Kind::Add: {
+      std::vector<E> xs;
+      for (const E& c : e->kids) xs.push_back(expand(c));
+      return add_n(xs);
+    }
+    case Kind::Mul: {
+      std::vector<E> xs;
+      for (const E& c : e->kids) xs.push_back(expand(c));
+      return expand_mul(xs);
+    }
+    case Kind::Pow: {
+      E b = expand(e->kids[0]);
+      E p = expand(e->kids[1]);
+      if (b->k == Kind::Add && is_num(p) && p->num.is_int() && p->num.n > 1 && p->num.n <= 8) {
+        std::vector<E> fs((size_t)p->num.n, b);     // (a+b)^n を n 個の積に開く
+        return expand_mul(fs);
+      }
+      return pow_e(b, p);
+    }
+    case Kind::Fn: {
+      std::vector<E> xs;
+      for (const E& c : e->kids) xs.push_back(expand(c));
+      return fn_e(e->name, xs);
+    }
+    case Kind::Eq: return raw(Kind::Eq, {expand(e->kids[0]), expand(e->kids[1])});
+  }
+  return e;
+}
+
+// ---------------------------------------------------------------- 印字
+
+// 表示のための次数。内部の正規順序（cmp）は「同じ式か」を判定するためのもので、
+// 読みやすさは別問題。人は x^2 - 5x + 6 の順で書くので、表示だけ次数の降順に並べ替える。
+inline long long disp_degree(const E& e) {
+  switch (e->k) {
+    case Kind::Num: return 0;
+    case Kind::Sym: return 1;
+    case Kind::Pow: {
+      const E& p = e->kids[1];
+      if (is_num(p) && p->num.is_int()) return disp_degree(e->kids[0]) * p->num.n;
+      return 1;
+    }
+    case Kind::Mul: {
+      long long d = 0;
+      for (const E& c : e->kids) d += disp_degree(c);
+      return d;
+    }
+    case Kind::Add: {
+      long long d = 0;
+      for (const E& c : e->kids) d = std::max(d, disp_degree(c));
+      return d;
+    }
+    default: return 1;
+  }
+}
+
+// 和の項を表示順に並べたもの（次数の降順、同じ次数なら正規順序）
+inline std::vector<E> disp_terms(const E& e) {
+  std::vector<E> ts = e->kids;
+  std::stable_sort(ts.begin(), ts.end(), [](const E& a, const E& b) {
+    const long long da = disp_degree(a), db = disp_degree(b);
+    if (da != db) return da > db;
+    return cmp(a, b) < 0;
+  });
+  return ts;
+}
+
+// 演算子の優先順位。括弧を出しすぎず、足りなくもしないため
+inline int prec(const E& e) {
+  switch (e->k) {
+    case Kind::Eq: return 0;
+    case Kind::Add: return 1;
+    case Kind::Mul: return 2;
+    case Kind::Pow: return 3;
+    default: return 4;
+  }
+}
+
+inline std::string to_infix(const E& e, int parent = 0);
+
+inline std::string wrap(const E& e, int p) {
+  const std::string s = to_infix(e, p);
+  return prec(e) < p ? "(" + s + ")" : s;
+}
+
+inline std::string to_infix(const E& e, int parent) {
+  (void)parent;
+  switch (e->k) {
+    case Kind::Num: return e->num.str();
+    case Kind::Sym: return e->name;
+    case Kind::Add: {
+      std::string s;
+      const std::vector<E> ts = disp_terms(e);
+      for (size_t i = 0; i < ts.size(); ++i) {
+        const E& t = ts[i];
+        // 負の項は "+ -3" ではなく "- 3" と書く
+        Rat c; E rest;
+        split_coeff(t, c, rest);
+        const bool minus = c.neg();
+        if (i == 0) { if (minus) s += "-"; }
+        else s += minus ? " - " : " + ";
+        Rat ac = minus ? -c : c;
+        E body = ac.is_one() && !is_num(rest) ? rest
+                 : (is_num(rest) && rest->num.is_one() ? num(ac) : mul_n({num(ac), rest}));
+        s += wrap(body, 1);
+      }
+      return s;
+    }
+    case Kind::Mul: {
+      std::string s;
+      for (size_t i = 0; i < e->kids.size(); ++i) {
+        if (i) s += "*";
+        s += wrap(e->kids[i], 2);
+      }
+      return s;
+    }
+    case Kind::Pow: {
+      const E& b = e->kids[0];
+      const E& p = e->kids[1];
+      if (is_num(p) && p->num == Rat(1, 2)) return "sqrt(" + to_infix(b) + ")";
+      // 指数が整数でない数のときは括弧が必須。"2^1/2" は自分のパーサで (2^1)/2 に読めてしまう
+      // ので、印字したものを読み直せなくなる（往復不変が壊れる）。
+      const bool need = !is_num(p) || !p->num.is_int() || p->num.neg();
+      const std::string ps = need ? "(" + to_infix(p) + ")" : to_infix(p);
+      return wrap(b, 4) + "^" + ps;
+    }
+    case Kind::Fn: {
+      std::string s = e->name + "(";
+      for (size_t i = 0; i < e->kids.size(); ++i) { if (i) s += ", "; s += to_infix(e->kids[i]); }
+      return s + ")";
+    }
+    case Kind::Eq: return to_infix(e->kids[0]) + " = " + to_infix(e->kids[1]);
+  }
+  return "?";
+}
+
+// LaTeX。デモの表示と、学習データを描くレンダラの入力に使う
+inline std::string to_latex(const E& e, int parent = 0) {
+  switch (e->k) {
+    case Kind::Num:
+      if (e->num.is_int()) return e->num.str();
+      return "\\frac{" + std::to_string(e->num.n) + "}{" + std::to_string(e->num.d) + "}";
+    case Kind::Sym: return e->name;
+    case Kind::Add: {
+      std::string s;
+      const std::vector<E> ts = disp_terms(e);
+      for (size_t i = 0; i < ts.size(); ++i) {
+        Rat c; E rest;
+        split_coeff(ts[i], c, rest);
+        const bool minus = c.neg();
+        if (i == 0) { if (minus) s += "-"; }
+        else s += minus ? " - " : " + ";
+        Rat ac = minus ? -c : c;
+        E body = ac.is_one() && !is_num(rest) ? rest
+                 : (is_num(rest) && rest->num.is_one() ? num(ac) : mul_n({num(ac), rest}));
+        s += to_latex(body, 1);
+      }
+      return s;
+    }
+    case Kind::Mul: {
+      // 有理数の係数は分数として前に出す（\frac{2}{3}x のように）
+      std::string s;
+      for (size_t i = 0; i < e->kids.size(); ++i) {
+        const E& f = e->kids[i];
+        std::string t = to_latex(f, 2);
+        if (f->k == Kind::Add) t = "(" + t + ")";
+        s += (i ? " " : "") + t;
+      }
+      return s;
+    }
+    case Kind::Pow: {
+      const E& b = e->kids[0];
+      const E& p = e->kids[1];
+      if (is_num(p) && p->num == Rat(1, 2)) return "\\sqrt{" + to_latex(b) + "}";
+      if (is_num(p) && p->num.n == -1 && p->num.d == 1)
+        return "\\frac{1}{" + to_latex(b) + "}";
+      std::string bs = to_latex(b, 4);
+      if (b->k == Kind::Add || b->k == Kind::Mul || b->k == Kind::Pow) bs = "(" + bs + ")";
+      return bs + "^{" + to_latex(p) + "}";
+    }
+    case Kind::Fn: {
+      std::string s = "\\" + e->name + "(";
+      for (size_t i = 0; i < e->kids.size(); ++i) { if (i) s += ", "; s += to_latex(e->kids[i]); }
+      return s + ")";
+    }
+    case Kind::Eq: return to_latex(e->kids[0]) + " = " + to_latex(e->kids[1]);
+  }
+  (void)parent;
+  return "?";
+}
+
+// ---------------------------------------------------------------- 構文解析
+//
+// 認識器ができるまでの入口であり、テストの入口でもある。暗黙の掛け算（5x, 2(x+1)）を
+// 受けるのは、写真から読んだ式がそう書かれているから。
+
+struct Parser {
+  std::string s;
+  size_t i = 0;
+  std::string err;
+
+  explicit Parser(std::string src) : s(std::move(src)) {}
+
+  void ws() { while (i < s.size() && (s[i] == ' ' || s[i] == '\t')) ++i; }
+  bool eat(char c) { ws(); if (i < s.size() && s[i] == c) { ++i; return true; } return false; }
+  bool peek(char c) { ws(); return i < s.size() && s[i] == c; }
+
+  E parse_all() {
+    E e = parse_eq();
+    ws();
+    if (i < s.size() && err.empty()) err = "余分な文字: " + s.substr(i);
+    return e;
+  }
+  E parse_eq() {
+    E l = parse_add();
+    if (eat('=')) return raw(Kind::Eq, {l, parse_add()});
+    return l;
+  }
+  E parse_add() {
+    E l = parse_mul();
+    for (;;) {
+      ws();
+      if (eat('+')) l = add_n({l, parse_mul()});
+      else if (eat('-')) l = add_n({l, mul_n({num(Rat(-1)), parse_mul()})});
+      else return l;
+    }
+  }
+  E parse_mul() {
+    E l = parse_unary();
+    for (;;) {
+      ws();
+      if (eat('*')) l = mul_n({l, parse_unary()});
+      else if (eat('/')) l = mul_n({l, pow_e(parse_unary(), num(Rat(-1)))});
+      else if (i < s.size() && (isalpha((unsigned char)s[i]) || s[i] == '(' ||
+                                isdigit((unsigned char)s[i]))) {
+        // 暗黙の掛け算。ただし数のあとに数が来る形（"2 3"）は書き間違いとして扱う
+        if (isdigit((unsigned char)s[i]) && is_num(l)) { err = "数が続いています"; return l; }
+        l = mul_n({l, parse_unary()});
+      } else return l;
+    }
+  }
+  E parse_unary() {
+    ws();
+    if (eat('-')) return mul_n({num(Rat(-1)), parse_unary()});
+    if (eat('+')) return parse_unary();
+    return parse_pow();
+  }
+  E parse_pow() {
+    E b = parse_atom();
+    ws();
+    if (eat('^')) return pow_e(b, parse_unary());     // 右結合
+    return b;
+  }
+  E parse_atom() {
+    ws();
+    if (i >= s.size()) { err = "式が途中で終わっています"; return num(Rat(0)); }
+    if (eat('(')) {
+      E e = parse_add();
+      if (!eat(')')) err = "閉じ括弧がありません";
+      return e;
+    }
+    if (isdigit((unsigned char)s[i])) {
+      long long v = 0;
+      while (i < s.size() && isdigit((unsigned char)s[i])) v = v * 10 + (s[i++] - '0');
+      if (i < s.size() && s[i] == '.') {              // 小数は有理数に直す（0.25 -> 1/4）
+        ++i;
+        long long f = 0, den = 1;
+        while (i < s.size() && isdigit((unsigned char)s[i])) { f = f * 10 + (s[i++] - '0'); den *= 10; }
+        return num(Rat(v * den + f, den));
+      }
+      return num(Rat(v));
+    }
+    if (isalpha((unsigned char)s[i])) {
+      std::string name;
+      while (i < s.size() && isalnum((unsigned char)s[i])) name += s[i++];
+      if (peek('(')) {
+        eat('(');
+        std::vector<E> args{parse_add()};
+        while (eat(',')) args.push_back(parse_add());
+        if (!eat(')')) err = "関数の閉じ括弧がありません";
+        return fn_e(name, args);
+      }
+      return sym(name);
+    }
+    err = std::string("読めない文字: ") + s[i];
+    ++i;
+    return num(Rat(0));
+  }
+};
+
+// 失敗したら why に理由が入り、戻り値は 0 になる
+inline E parse(const std::string& src, std::string* why = nullptr) {
+  Parser p(src);
+  E e = p.parse_all();
+  if (why) *why = p.err;
+  return simp(e);
+}
+
+// ---------------------------------------------------------------- 補助
+
+// 出現する変数（並びは決定的）
+inline void collect_syms(const E& e, std::vector<std::string>& out) {
+  if (e->k == Kind::Sym) {
+    if (std::find(out.begin(), out.end(), e->name) == out.end()) out.push_back(e->name);
+  }
+  for (const E& c : e->kids) collect_syms(c, out);
+}
+
+// 数値評価（表示の最後だけで使う。厳密に閉じない sqrt などのため）
+inline double approx(const E& e) {
+  switch (e->k) {
+    case Kind::Num: return e->num.f();
+    case Kind::Sym: return 0.0;                        // 未知数は 0 とみなす（呼ぶ側で弾く）
+    case Kind::Add: { double s = 0; for (const E& c : e->kids) s += approx(c); return s; }
+    case Kind::Mul: { double s = 1; for (const E& c : e->kids) s *= approx(c); return s; }
+    case Kind::Pow: return std::pow(approx(e->kids[0]), approx(e->kids[1]));
+    case Kind::Fn: {
+      const double a = e->kids.empty() ? 0.0 : approx(e->kids[0]);
+      if (e->name == "sin") return std::sin(a);
+      if (e->name == "cos") return std::cos(a);
+      if (e->name == "tan") return std::tan(a);
+      if (e->name == "ln") return std::log(a);
+      if (e->name == "exp") return std::exp(a);
+      if (e->name == "abs") return std::fabs(a);
+      return a;
+    }
+    case Kind::Eq: return approx(e->kids[0]) - approx(e->kids[1]);
+  }
+  return 0.0;
+}
+
+}  // namespace ex

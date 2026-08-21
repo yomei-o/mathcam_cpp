@@ -1,0 +1,13 @@
+*.exe
+*.obj
+*.o
+scratch/*
+!scratch/.gitkeep
+__pycache__/
+*.pyc
+.venv/
+# 生成した ONNX は入れない（1 コマンドで作り直せる）。学習済みで使えるものだけ例外にする
+models/*.onnx
+# 事前学習重みとデータセットは各自で用意する
+*.pth
+*.pt
