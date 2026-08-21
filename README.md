@@ -154,6 +154,14 @@ python tools/real_eval.py --dir test_data --model models/sym_det.onnx --show
 ./mathcam.exe eval   --expr "mixed(2,5,8) × frac(4,7) - (mixed(5,1,3) - frac(1,2)) ÷ 5"  # 8/15
 ./mathcam.exe selftest --n 300 --arith     # 描いて読み戻して値が一致するか（300/300）
 ./mathcam.exe dataset --out data/train --n 5000 --arith --photo-like
+
+# 手順も出る（かっこの中 -> かけ算・わり算 -> たし算・ひき算、帯分数は仮分数に直す）
+./mathcam.exe solve --expr "{1.8 × 3.5 - (10.2 - 6.8)} × 9" --steps
+#   1. [かっこの中を計算] 1.8 × 3.5 = 6.3      (6.3 - (10.2 - 6.8)) × 9
+#   ...
+#   4. [かけ算・わり算を先に] 2.9 × 9 = 26.1   26.1
+python tools/arith.py --expr "{1.8 × 3.5 - (10.2 - 6.8)} × 9"   # Python 側も同じ手順
+python tools/parity/arith.py --n 200                            # 手順の全行を突き合わせる
 ```
 
 * **絵と値の出どころは 1 つのテキスト**。絵は `ts::present_arith` が作り、値は同じ文字列を
@@ -161,6 +169,10 @@ python tools/real_eval.py --dir test_data --model models/sym_det.onnx --show
 * クラス表の末尾に `times / div / dot / brace_l / brace_r` を足した。**末尾に足すので既存モデルと
   番号は互換**だが、検出されるようにするには 39 クラスで学習し直す必要がある。
 * プリントの「… = □」は右辺が空。**= の右が空なら左だけの式として読む**ようにした。
+* 手順を出すには**畳まない木**が要る（CAS は読んだ時点で計算してしまうので、どこを先に
+  計算したかが消える）。`ex::parse_raw` / `pl::parse_raw` がそれを作り、`pure/arith.hpp` が
+  内側から 1 手ずつ畳む。**小数で書くのは元の式が小数のときだけ**（分数の問題で `5/8` を
+  `0.625` と書いたら小学校の答えとしては嘘）。
 
 ## 設計で決めたこと（理由つき）
 
