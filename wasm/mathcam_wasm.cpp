@@ -173,8 +173,9 @@ EMSCRIPTEN_KEEPALIVE int mc_run_lines(const unsigned char* rgba, int w, int h, i
   std::string js = "{\"mode\":\"lines\",\"lines\":[";
   for (const pipeln::Cell& c : cells) {
     const pl::Result cr = pl::parse(c.syms);
-    // 問題番号（ただの数になる塊）と、記号が 2 つ以下で読めない塊は出さない
-    if (cr.ok && ex::is_num(cr.e)) continue;
+    // 問題番号（「(1)」など）と、記号が 2 つ以下で読めない塊は出さない。**記号の数でも
+    // 縛る**（小学校の計算は値が数になるので、数だけを条件にすると式そのものが消える）
+    if (cr.ok && ex::is_num(cr.e) && c.syms.size() <= 4) continue;
     if (!cr.ok && c.syms.size() < 3) continue;
     total += (int)c.syms.size();
     js += (first ? "{" : ",{");

@@ -71,13 +71,15 @@ function decodePng(buf) {
   const {w, h, rgba} = decodePng(fs.readFileSync(img));
   const M = await require(path.join(__dirname, 'mathcam.js'))();
 
-  const model = fs.readFileSync(path.join(root, 'models', 'sym_det.onnx'));
+  // 第 2 引数でモデルを差し替えられる（出荷前に候補の重みでブラウザの道を通すため）
+  const modelPath = process.argv[3] || path.join(root, 'models', 'sym_det.onnx');
+  const model = fs.readFileSync(modelPath);
   let p = M._malloc(model.length);
   M.HEAPU8.set(model, p);
   const nodes = M.ccall('mc_load', 'number', ['number', 'number'], [p, model.length]);
   M._free(p);
   if (nodes <= 0) { console.error('mc_load 失敗'); process.exit(1); }
-  console.log('nodes', nodes);
+  console.log('nodes', nodes, path.basename(modelPath));
 
   p = M._malloc(rgba.length);
   M.HEAPU8.set(rgba, p);

@@ -728,7 +728,9 @@ static int cmd_photo(int argc, char** argv) {
     printf("%zu 塊（2 段で検出）\n", cs.size());
     for (const pipeln::Cell& c : cs) {
       const pl::Result cr = pl::parse(c.syms);
-      if (cr.ok && ex::is_num(cr.e)) continue;              // 問題番号は出さない
+      // 問題番号（「(1)」など）は出さない。**記号の数でも縛る**（小学校の計算は値が数に
+      // なるので、「数になったら番号」とだけ書くと式そのものが消える。実測: s6.png が消えた）
+      if (cr.ok && ex::is_num(cr.e) && c.syms.size() <= 4) continue;
       if (!cr.ok && c.syms.size() < 3) continue;
       printf("--- (%d,%d)-(%d,%d)  %zu 記号 ---\n", c.x0, c.y0, c.x1, c.y1, c.syms.size());
       if (show_syms) {
