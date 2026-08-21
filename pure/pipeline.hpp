@@ -165,56 +165,111 @@ inline std::vector<std::pair<int, int>> ink_bands(const unsigned char* rgb, int 
   return out;
 }
 
+// 帯の中を**縦の射影**で塊に切る（x0,x1 の組）。行と同じ考え方を横方向にやるだけ。
+//
+// **ここでモデルを使わない**のが要点。粗く検出してから切ろうとすると、教科書 1 ページ
+// （幅 2016）では帯がそのまま 640 に縮んで字が小さくなり、粗い段で何も出ない（実測: ページ
+// まるごとで 98 記号しか出ず、しかも化けていた）。射影なら検出器の出来に依らない。
+// 隙間の下限は**帯の高さ**を尺度にする（字の間の隙間と、問題どうしの隙間は桁が違う）。
+// 実測（教科書 1 ページを丸ごと渡して正解表と突き合わせ、tools/page_eval.py）:
+// 帯の高さの 90% -> 2/12、60% -> 2/12、40% -> 3/12。問題番号「(1)」と式の間隔が
+// 字の高さの半分ほどしかないので、大きく取ると番号と式がくっつく。
+inline std::vector<std::pair<int, int>> ink_cols(const unsigned char* rgb, int w, int h, int y0,
+                                                int y1, double gap_factor = 0.35) {
+  std::vector<std::pair<int, int>> out;
+  const int bh = y1 - y0;
+  if (bh <= 0 || w <= 0) return out;
+  // 帯の紙の明るさ（帯全体の中央値）。行ごとに取る ink_bands と違い、帯の中は明るさが揃う
+  std::vector<int> all;
+  all.reserve((size_t)w * bh / 4 + 1);
+  for (int y = y0; y < y1; y += 2)
+    for (int x = 0; x < w; x += 2) {
+      const size_t i = ((size_t)y * w + x) * 3;
+      all.push_back((rgb[i] * 30 + rgb[i + 1] * 59 + rgb[i + 2] * 11) / 100);
+    }
+  if (all.empty()) return out;
+  std::nth_element(all.begin(), all.begin() + all.size() / 2, all.end());
+  const int paper = all[all.size() / 2];
+  std::vector<int> ink((size_t)w, 0);
+  for (int x = 0; x < w; ++x) {
+    int c = 0;
+    for (int y = y0; y < y1; ++y) {
+      const size_t i = ((size_t)y * w + x) * 3;
+      const int g = (rgb[i] * 30 + rgb[i + 1] * 59 + rgb[i + 2] * 11) / 100;
+      if (g < paper - 30) ++c;
+    }
+    ink[(size_t)x] = c;
+  }
+  const int min_ink = std::max(1, bh / 20);
+  std::vector<std::pair<int, int>> runs;
+  int x = 0;
+  while (x < w) {
+    while (x < w && ink[(size_t)x] <= min_ink) ++x;
+    if (x >= w) break;
+    const int s = x;
+    while (x < w && ink[(size_t)x] > min_ink) ++x;
+    runs.push_back({s, x});
+  }
+  if (runs.empty()) return out;
+  // **切る隙間は分布で決める。** 固定値だと両立しない: 大きく取ると問題番号「(1)」が式に
+  // くっつき（実測: 帯の高さの 90% で 2/12）、小さく取ると 1 つの式が割れる（40% にしたら
+  // `x^2 - 5x + 6 = 0` が `x^2 - 5x` と `+ 6 = 0` に割れて、ブラウザの検査が落ちた）。
+  // 字の間の隙間（中央値）を基準に、その 2.5 倍より広い隙間だけを切れ目とする。
+  std::vector<int> gaps;
+  for (size_t i = 1; i < runs.size(); ++i) gaps.push_back(runs[i].first - runs[i - 1].second);
+  int med_gap = 0;
+  if (!gaps.empty()) {
+    std::vector<int> g2 = gaps;
+    std::sort(g2.begin(), g2.end());
+    med_gap = g2[g2.size() / 2];
+  }
+  const int gap = std::max(std::max(4, (int)(bh * gap_factor)), med_gap * 5 / 2);
+  out.push_back(runs[0]);
+  for (size_t i = 1; i < runs.size(); ++i) {
+    if (runs[i].first - out.back().second <= gap) out.back().second = runs[i].second;
+    else out.push_back(runs[i]);
+  }
+  return out;
+}
+
 // 塊（1 式ぶん）とその中の記号。detect_by_cells が返す。
 struct Cell {
   int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
   std::vector<pl::Sym> syms;
 };
 
-// **粗く検出してから、塊ごとに元画像から読み直す。**
+// **射影で塊に切ってから、塊ごとに 1 回だけ検出する。**
 //
 // 行に切るだけでは足りない（実測: 教科書の 1200x460 の欄を 4 行に切っても、1 行が
 // 1200x60 なので 640 に縮む段で 0.53 倍になり、31 記号のうち半分が化けた）。**当たるのは
-// 1 式ぶんを囲んだとき**（280x90 なら 640 に 2 倍以上に拡大される。実測 11/12）。
-// そこで 2 段にする: 行の帯で 1 回検出して**塊の位置だけ**を得て、塊ごとに元画像から
-// 切り出して読み直す。粗い側が化けても位置は取れるので、2 段目で精度が戻る。
+// 1 式ぶんを囲んだとき**（280x90 なら 640 に 2 倍以上に拡大される。実測 12/12）。
+// そこで行（横の射影）と塊（縦の射影）の両方を**モデルを使わずに**切り出し、塊ごとに
+// 元画像から読む。検出は塊の数だけ走る（ページ 1 枚で 20 回ほど）。
 inline std::vector<Cell> detect_by_cells(const onx::Graph& g, const unsigned char* rgb, int w,
-                                        int h, int imgsz, float conf, float nms, BoxFmt fmt) {
+                                        int h, int imgsz, float conf, float nms, BoxFmt fmt,
+                                        int gap_pct = 35) {   // 隙間の下限（残りは分布で決める）
   std::vector<Cell> out;
   const std::vector<std::pair<int, int>> bands = ink_bands(rgb, w, h, 4);
   for (const std::pair<int, int>& b : bands) {
     const int bh = b.second - b.first;
     if (bh <= 0) continue;
-    std::vector<unsigned char> sub((size_t)w * bh * 3);
-    for (int y = 0; y < bh; ++y)
-      std::memcpy(&sub[(size_t)y * w * 3], rgb + ((size_t)(y + b.first) * w) * 3, (size_t)w * 3);
-    Detected d = detect_syms(g, sub.data(), w, bh, imgsz, conf, nms, fmt);
-    for (pl::Sym& s : d.syms) { s.y0 += b.first; s.y1 += b.first; s.base_y += b.first; }
-    if (d.syms.empty()) continue;
-    for (const std::vector<pl::Sym>& c : pl::split_cells(d.syms)) {
-      int x0 = c[0].x0, y0 = c[0].y0, x1 = c[0].x1, y1 = c[0].y1;
-      std::vector<int> hs;
-      for (const pl::Sym& s : c) {
-        x0 = std::min(x0, s.x0); y0 = std::min(y0, s.y0);
-        x1 = std::max(x1, s.x1); y1 = std::max(y1, s.y1);
-        hs.push_back(s.h());
-      }
-      std::sort(hs.begin(), hs.end());
-      // **余白を字の高さぶん取る**（上付きや分数線が帯の外に出ていることがある）
-      const int pad = std::max(6, hs[hs.size() / 2] / 2);
-      const int cx0 = std::max(0, x0 - pad), cy0 = std::max(0, y0 - pad);
-      const int cx1 = std::min(w, x1 + pad), cy1 = std::min(h, y1 + pad);
+    for (const std::pair<int, int>& c :
+         ink_cols(rgb, w, h, b.first, b.second, gap_pct / 100.0)) {
+      // 余白を帯の高さの 1/4 取る（上付きや括弧が帯の外に出ていることがある）
+      const int pad = std::max(4, bh / 4);
+      const int cx0 = std::max(0, c.first - pad), cy0 = std::max(0, b.first - pad);
+      const int cx1 = std::min(w, c.second + pad), cy1 = std::min(h, b.second + pad);
       const int cw = cx1 - cx0, chh = cy1 - cy0;
       if (cw < 8 || chh < 8) continue;
       std::vector<unsigned char> cell((size_t)cw * chh * 3);
       for (int y = 0; y < chh; ++y)
         std::memcpy(&cell[(size_t)y * cw * 3], rgb + ((size_t)(y + cy0) * w + cx0) * 3,
                     (size_t)cw * 3);
-      Detected d2 = detect_syms(g, cell.data(), cw, chh, imgsz, conf, nms, fmt);
-      if (d2.syms.empty()) continue;
+      Detected d = detect_syms(g, cell.data(), cw, chh, imgsz, conf, nms, fmt);
+      if (d.syms.empty()) continue;
       Cell res;
       res.x0 = cx0; res.y0 = cy0; res.x1 = cx1; res.y1 = cy1;
-      for (pl::Sym& s : d2.syms) {
+      for (pl::Sym& s : d.syms) {
         s.x0 += cx0; s.x1 += cx0;
         s.y0 += cy0; s.y1 += cy0; s.base_y += cy0;
         res.syms.push_back(s);
