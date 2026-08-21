@@ -146,14 +146,17 @@ static int cmd_render(int argc, char** argv) {
     return 1;
   }
   std::string why;
+  // --arith は「書かれたとおりに描く」ので、式として読めなくてもよい
+  // （プリントの「… = □」は右辺が空で、CAS には読めない）
+  const bool arith_mode = has_flag(argc, argv, "--arith");
   ex::E e = ex::parse(src, &why);
-  if (!why.empty()) { printf("parse error: %s\n", why.c_str()); return 1; }
+  if (!why.empty() && !arith_mode) { printf("parse error: %s\n", why.c_str()); return 1; }
 
   ts::Font font, font_i;
   if (!ts::load_font(font, fontp, &why)) { printf("%s\n", why.c_str()); return 1; }
   const bool has_i = st.italic_vars && ts::load_font(font_i, fontip, nullptr, true);
-  // --arith は「書かれたとおりに描く」（÷ や帯分数は正規形で消えるので、木を経由しない）
-  const ts::Rendered R = has_flag(argc, argv, "--arith")
+  // ÷ や帯分数は正規形で消えるので、木を経由しない道で描く
+  const ts::Rendered R = arith_mode
                              ? ts::render_arith(font, has_i ? &font_i : nullptr, src, px, st)
                              : ts::render(font, has_i ? &font_i : nullptr, e, px, st);
   if (!out.empty()) {

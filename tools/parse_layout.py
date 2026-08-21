@@ -317,10 +317,16 @@ def parse_flat(v_in):
     # 2) 桁をまとめる
     v = merge_digits(list(v))
 
-    # 3) = で割る
+    # 3) = で割る。**右が空なら左だけの式として扱う**（プリントの「… = □」の形。
+    #    答えを書く四角は読まないので、右辺には何も残らない）
     for i, s in enumerate(v):
         if not s.atom and s.cls == "=":
-            return X.eq(parse_flat(v[:i]), parse_flat(v[i + 1:]))
+            l, r = v[:i], v[i + 1:]
+            if not r and l:
+                return parse_flat(l)
+            if not l and r:
+                return parse_flat(r)
+            return X.eq(parse_flat(l), parse_flat(r))
 
     # 4) ± で割る（右から。左結合にするため）
     for i in range(len(v) - 1, 0, -1):

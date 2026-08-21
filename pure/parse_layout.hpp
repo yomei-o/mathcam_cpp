@@ -356,10 +356,13 @@ inline ex::E parse_flat(std::vector<Sym> v, std::string* why) {
   // 2) 桁をまとめる
   merge_digits(v);
 
-  // 3) = で割る
+  // 3) = で割る。**右が空なら左だけの式として扱う**（プリントの「… = □」の形。
+  //    答えを書く四角は読まないので、右辺には何も残らない）
   for (size_t i = 0; i < v.size(); ++i)
     if (!v[i].atom && v[i].cls == "=") {
       std::vector<Sym> l(v.begin(), v.begin() + (long)i), r(v.begin() + (long)i + 1, v.end());
+      if (r.empty() && !l.empty()) return parse_flat(l, why);
+      if (l.empty() && !r.empty()) return parse_flat(r, why);
       const E a = parse_flat(l, why);
       if (!why->empty()) return num(Rat(0));
       const E b = parse_flat(r, why);
