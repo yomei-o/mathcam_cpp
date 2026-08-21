@@ -6,9 +6,11 @@
 //   mathcam dataset --out data/train --n 2000 [--seed 1] [--px-min 32 --px-max 64]
 //   mathcam parse   --labels out.txt        枠の列から式木に戻す（レイアウト解析）
 //   mathcam selftest --n 500                組版 -> 解析 -> 元の式に戻るかを測る
+//   mathcam photo --img x.png --model models/sym_det.onnx [--steps]   写真 1 枚を端から端まで
 //
 // build: sh build/cc.sh pure/mathcam.cpp -o mathcam.exe
 //        sh build/gcc.sh pure/mathcam.cpp -o mathcam.exe
+#define STB_IMAGE_IMPLEMENTATION
 #define STB_TRUETYPE_IMPLEMENTATION
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
@@ -17,6 +19,9 @@
 #include "typeset_impl.hpp"
 #include "gen_expr.hpp"
 #include "parse_layout.hpp"
+#include "classes.hpp"
+#include "pipeline.hpp"
+#include "stb_image.h"
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -353,12 +358,136 @@ static int cmd_fontinfo(int argc, char** argv) {
   return 0;
 }
 
+// mathcam photo — **端から端まで**。画像 -> 記号検出（自作ランタイム）-> レイアウト解析 ->
+// 式木 -> solve -> 手順。推論ライブラリは使わない（pure/onnx_run.hpp）。
+// mathcam e2e — 端から端までの正解率。式を作る -> 組版 -> **検出** -> 解析 -> 元の式と比べる。
+// selftest（組版 -> 解析）との差が、検出器のぶんの損失になる。
+static int cmd_e2e(int argc, char** argv) {
+  const int n = std::atoi(arg_of(argc, argv, "--n", "50").c_str());
+  const uint64_t seed = strtoull(arg_of(argc, argv, "--seed", "1").c_str(), nullptr, 10);
+  const int px_min = std::atoi(arg_of(argc, argv, "--px-min", "28").c_str());
+  const int px_max = std::atoi(arg_of(argc, argv, "--px-max", "72").c_str());
+  const std::string model_p = arg_of(argc, argv, "--model", "models/sym_det.onnx");
+  const std::string fontp = arg_of(argc, argv, "--font", "");
+  const int imgsz = std::atoi(arg_of(argc, argv, "--imgsz", "640").c_str());
+  const float conf = (float)atof(arg_of(argc, argv, "--conf", "0.25").c_str());
+  const bool show = has_flag(argc, argv, "--show-fail");
+  std::string why;
+  ts::Font font;
+  if (!ts::load_font(font, fontp, &why)) { printf("%s\n", why.c_str()); return 1; }
+  onx::Graph g = onx::load_onnx(model_p);
+  if (g.nodes.empty()) { printf("cannot read %s\n", model_p.c_str()); return 1; }
+
+  Rng rng(seed);
+  int ok = 0, bad = 0, shown = 0, skipped = 0;
+  for (int i = 0; i < n; ++i) {
+    const std::string src = gx::one(rng);
+    const int px = px_min + (int)rng.below((uint64_t)(px_max - px_min + 1));
+    ex::E e = ex::parse(src, &why);
+    if (!why.empty()) { ++skipped; continue; }
+    const ts::Rendered R = ts::render(font, e, px);
+    // 灰色 1ch を RGB に広げる（検出器は 3ch を期待する）
+    std::vector<unsigned char> rgb((size_t)R.w * R.h * 3);
+    for (size_t k = 0; k < (size_t)R.w * R.h; ++k) {
+      rgb[k * 3] = rgb[k * 3 + 1] = rgb[k * 3 + 2] = R.gray[k];
+    }
+    const pipe::Detected d = pipe::detect_syms(g, rgb.data(), R.w, R.h, imgsz, conf, 0.45f, BoxFmt::CXCYWH);
+    const pl::Result r = pl::parse(d.syms);
+    const bool same = r.ok && ex::equal(ex::expand(r.e), ex::expand(e));
+    if (same) ++ok;
+    else {
+      ++bad;
+      if (show && shown++ < 12)
+        printf("  NG  px=%-3d %-30s -> %s\n", px, src.c_str(),
+               r.ok ? r.text.c_str() : ("(" + r.why + ")").c_str());
+    }
+  }
+  printf("端から端まで: %d / %d 正解（%.1f%%）、捨てた式 %d\n", ok, ok + bad,
+         (ok + bad) ? 100.0 * ok / (ok + bad) : 0.0, skipped);
+  return 0;
+}
+
+// mathcam rgba — 画像を生の RGBA で吐く。WASM のテスト（wasm/test_node.js）が
+// **ブラウザと同じ画素**を渡せるようにするため。
+static int cmd_rgba(int argc, char** argv) {
+  const std::string img = arg_of(argc, argv, "--img", "");
+  const std::string out = arg_of(argc, argv, "--out", "");
+  if (img.empty() || out.empty()) {
+    printf("usage: mathcam rgba --img <file> --out <file.rgba>\n");
+    return 1;
+  }
+  int w = 0, h = 0, ch = 0;
+  unsigned char* px = stbi_load(img.c_str(), &w, &h, &ch, 4);
+  if (!px) { printf("cannot read %s\n", img.c_str()); return 1; }
+  FILE* f = fopen(out.c_str(), "wb");
+  if (!f) { stbi_image_free(px); printf("cannot write %s\n", out.c_str()); return 1; }
+  fwrite(px, 1, (size_t)w * h * 4, f);
+  fclose(f);
+  printf("wrote %s (%dx%d RGBA)\n", out.c_str(), w, h);
+  stbi_image_free(px);
+  return 0;
+}
+
+static int cmd_photo(int argc, char** argv) {
+  const std::string img_p = arg_of(argc, argv, "--img", "");
+  const std::string model_p = arg_of(argc, argv, "--model", "models/sym_det.onnx");
+  const int imgsz = std::atoi(arg_of(argc, argv, "--imgsz", "640").c_str());
+  const float conf = (float)atof(arg_of(argc, argv, "--conf", "0.25").c_str());
+  const float nms = (float)atof(arg_of(argc, argv, "--nms", "0.45").c_str());
+  const bool steps = has_flag(argc, argv, "--steps");
+  const bool show_syms = has_flag(argc, argv, "--show-syms");
+  // 箱の形は export 依存。Ultralytics の素の export は cxcywh（姉妹リポの記録）
+  const BoxFmt fmt = arg_of(argc, argv, "--fmt", "cxcywh") == "xyxy" ? BoxFmt::XYXY
+                                                                    : BoxFmt::CXCYWH;
+  if (img_p.empty()) {
+    printf("usage: mathcam photo --img x.png [--model models/sym_det.onnx] [--steps]\n");
+    return 1;
+  }
+  int w = 0, h = 0, ch = 0;
+  unsigned char* px = stbi_load(img_p.c_str(), &w, &h, &ch, 3);
+  if (!px) { printf("cannot read %s\n", img_p.c_str()); return 1; }
+  onx::Graph g = onx::load_onnx(model_p);
+  if (g.nodes.empty()) { printf("cannot read %s\n", model_p.c_str()); stbi_image_free(px); return 1; }
+  // e2e と WASM と同じ 1 本を通す（pure/pipeline.hpp）
+  const pipe::Detected det = pipe::detect_syms(g, px, w, h, imgsz, conf, nms, fmt);
+  stbi_image_free(px);
+  const std::vector<pl::Sym>& syms = det.syms;
+  printf("%zu 記号を検出\n", syms.size());
+  if (show_syms) {
+    std::vector<pl::Sym> sorted = syms;
+    std::sort(sorted.begin(), sorted.end(), pl::by_x);
+    for (const pl::Sym& sm : sorted)
+      printf("  %-5s (%d,%d)-(%d,%d)\n", sm.cls.c_str(), sm.x0, sm.y0, sm.x1, sm.y1);
+  }
+  const pl::Result r = pl::parse(syms);
+  if (!r.ok) { printf("レイアウト解析に失敗: %s\n", r.why.c_str()); return 1; }
+  printf("読めた式: %s\n", r.text.c_str());
+
+  const slv::Solution sol = slv::solve(r.e);
+  if (!sol.ok) {
+    // 方程式でなければ、値を計算して出す（計算問題として扱う）
+    const ex::E v = ex::expand(r.e);
+    printf("答え: %s\n", ex::to_infix(v).c_str());
+    return 0;
+  }
+  if (steps)
+    for (size_t i = 0; i < sol.steps.size(); ++i)
+      printf("%zu. [%s] %s\n   %s\n", i + 1, sol.steps[i].rule.c_str(),
+             sol.steps[i].note.c_str(), ex::to_infix(sol.steps[i].after).c_str());
+  if (sol.kind == "identity") { printf("すべての値で成り立つ\n"); return 0; }
+  if (sol.kind == "contradiction") { printf("解なし（矛盾）\n"); return 0; }
+  if (sol.roots.empty()) { printf("実数解なし\n"); return 0; }
+  for (const ex::E& rt : sol.roots)
+    printf("%s = %s\n", sol.var.c_str(), ex::to_infix(rt).c_str());
+  return 0;
+}
+
 int main(int argc, char** argv) {
 #ifdef _WIN32
   SetConsoleOutputCP(CP_UTF8);
 #endif
   if (argc < 2) {
-    printf("usage: mathcam <eval|solve|render|dataset|parse|selftest> ...\n");
+    printf("usage: mathcam <eval|solve|render|dataset|parse|selftest|photo> ...\n");
     return 1;
   }
   const std::string cmd = argv[1];
@@ -370,6 +499,9 @@ int main(int argc, char** argv) {
   if (cmd == "parse") return cmd_parse(argc, argv);
   if (cmd == "selftest") return cmd_selftest(argc, argv);
   if (cmd == "fontinfo") return cmd_fontinfo(argc, argv);
+  if (cmd == "photo") return cmd_photo(argc, argv);
+  if (cmd == "rgba") return cmd_rgba(argc, argv);
+  if (cmd == "e2e") return cmd_e2e(argc, argv);
   printf("mathcam: '%s' is not implemented yet\n", cmd.c_str());
   return 1;
 }

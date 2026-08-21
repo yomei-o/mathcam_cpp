@@ -466,6 +466,25 @@ def disp_terms(e):
     return ts
 
 
+def split_num_den(e):
+    """積を「分子の因子」と「分母の因子」に分ける。**印字のためだけ**で、意味の木は変えない。
+    組版側（tools/typeset.py の split_frac）と同じ考え方。これをやらないと 2/(3x) が
+    "2/3*1/x" と出る（読めない）。"""
+    up, down = [], []
+    fs = list(e.kids) if e.k == MUL else [e]
+    for f in fs:
+        if f.k == POW and is_num(f.kids[1]) and f.kids[1].num.neg():
+            q = f.kids[1].num
+            down.append(f.kids[0] if (q.n == -1 and q.d == 1) else pow_e(f.kids[0], num(-q)))
+        elif is_num(f) and not f.num.is_int():
+            if f.num.n != 1:
+                up.append(num(Rat(f.num.n)))
+            down.append(num(Rat(f.num.d)))
+        else:
+            up.append(f)
+    return up, down
+
+
 def prec(e):
     return {EQ: 0, ADD: 1, MUL: 2, POW: 3}.get(e.k, 4)
 
@@ -506,6 +525,11 @@ def to_infix(e):
             s += _wrap(body, 1)
         return s
     if e.k == MUL:
+        up, down = split_num_den(e)
+        if down:
+            nu = num(1) if not up else (up[0] if len(up) == 1 else mul_n(up))
+            de = down[0] if len(down) == 1 else mul_n(down)
+            return _wrap(nu, 2) + "/" + _wrap(de, 3)
         # 係数 -1 は "-1*x" ではなく "-x" と書く（人はそう書く）
         kids = list(e.kids)
         pre = ""
@@ -516,6 +540,10 @@ def to_infix(e):
         b, p = e.kids
         if is_num(p) and p.num == Rat(1, 2):
             return "sqrt(" + to_infix(b) + ")"
+        # 負の指数は分数で書く（LaTeX 側と組版側に合わせる）
+        if is_num(p) and p.num.neg():
+            den = _wrap(b, 3) if (p.num.n == -1 and p.num.d == 1) else _wrap(pow_e(b, num(-p.num)), 3)
+            return "1/" + den
         # 分数・負の指数は括弧が必須。"2^1/2" は自分のパーサで (2^1)/2 に読めてしまう
         need = (not is_num(p)) or (not p.num.is_int()) or p.num.neg()
         ps = "(" + to_infix(p) + ")" if need else to_infix(p)
@@ -546,6 +574,11 @@ def to_latex(e):
             s += to_latex(body)
         return s
     if e.k == MUL:
+        up, down = split_num_den(e)
+        if down:
+            nu = num(1) if not up else (up[0] if len(up) == 1 else mul_n(up))
+            de = down[0] if len(down) == 1 else mul_n(down)
+            return "\\frac{" + to_latex(nu) + "}{" + to_latex(de) + "}"
         kids = list(e.kids)
         pre = ""
         if len(kids) > 1 and is_num(kids[0]) and kids[0].num.n == -1 and kids[0].num.d == 1:
@@ -561,8 +594,10 @@ def to_latex(e):
         b, p = e.kids
         if is_num(p) and p.num == Rat(1, 2):
             return "\\sqrt{" + to_latex(b) + "}"
-        if is_num(p) and p.num.n == -1 and p.num.d == 1:
-            return "\\frac{1}{" + to_latex(b) + "}"
+        # 負の指数は分数で書く（-1 だけでなく -1/2 なども。往復で表示が変わらないように）
+        if is_num(p) and p.num.neg():
+            inner = b if (p.num.n == -1 and p.num.d == 1) else pow_e(b, num(-p.num))
+            return "\\frac{1}{" + to_latex(inner) + "}"
         bs = to_latex(b)
         if b.k in (ADD, MUL, POW):
             bs = "(" + bs + ")"

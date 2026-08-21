@@ -432,6 +432,25 @@ inline int prec(const E& e) {
   }
 }
 
+// 積を「分子の因子」と「分母の因子」に分ける。**印字のためだけ**の処理で、意味の木は変えない。
+// 組版側（typeset.hpp の split_frac）と同じ考え方: 指数が負のものと、有理数の分母が分母に行く。
+// これをやらないと 2/(3x) が "2/3*1/x" と出る（読めない）。
+inline void split_num_den(const E& e, std::vector<E>& up, std::vector<E>& down) {
+  std::vector<E> fs;
+  if (e->k == Kind::Mul) fs = e->kids; else fs.push_back(e);
+  for (const E& f : fs) {
+    if (f->k == Kind::Pow && is_num(f->kids[1]) && f->kids[1]->num.neg()) {
+      const Rat q = f->kids[1]->num;
+      down.push_back(q.n == -1 && q.d == 1 ? f->kids[0] : pow_e(f->kids[0], num(-q)));
+    } else if (is_num(f) && !f->num.is_int()) {
+      if (f->num.n != 1) up.push_back(num(Rat(f->num.n)));
+      down.push_back(num(Rat(f->num.d)));
+    } else {
+      up.push_back(f);
+    }
+  }
+}
+
 inline std::string to_infix(const E& e, int parent = 0);
 
 inline std::string wrap(const E& e, int p) {
@@ -463,6 +482,15 @@ inline std::string to_infix(const E& e, int parent) {
       return s;
     }
     case Kind::Mul: {
+      {
+        std::vector<E> up, down;
+        split_num_den(e, up, down);
+        if (!down.empty()) {
+          const E nu = up.empty() ? num(Rat(1)) : (up.size() == 1 ? up[0] : mul_n(up));
+          const E de = down.size() == 1 ? down[0] : mul_n(down);
+          return wrap(nu, 2) + "/" + wrap(de, 3);
+        }
+      }
       // 係数 -1 は "-1*x" ではなく "-x" と書く（人はそう書く）
       std::string s;
       size_t start = 0;
@@ -481,6 +509,13 @@ inline std::string to_infix(const E& e, int parent) {
       const E& b = e->kids[0];
       const E& p = e->kids[1];
       if (is_num(p) && p->num == Rat(1, 2)) return "sqrt(" + to_infix(b) + ")";
+      // 負の指数は分数で書く（LaTeX 側と組版側は分数なのに、中置だけ x^(-1) と出ていた）
+      if (is_num(p) && p->num.neg()) {
+        const std::string den = p->num.n == -1 && p->num.d == 1
+                                    ? wrap(b, 3)
+                                    : wrap(pow_e(b, num(-p->num)), 3);
+        return "1/" + den;
+      }
       // 指数が整数でない数のときは括弧が必須。"2^1/2" は自分のパーサで (2^1)/2 に読めてしまう
       // ので、印字したものを読み直せなくなる（往復不変が壊れる）。
       const bool need = !is_num(p) || !p->num.is_int() || p->num.neg();
@@ -522,6 +557,15 @@ inline std::string to_latex(const E& e, int parent = 0) {
     }
     case Kind::Mul: {
       // 有理数の係数は分数として前に出す（\frac{2}{3}x のように）
+      {
+        std::vector<E> up, down;
+        split_num_den(e, up, down);
+        if (!down.empty()) {
+          const E nu = up.empty() ? num(Rat(1)) : (up.size() == 1 ? up[0] : mul_n(up));
+          const E de = down.size() == 1 ? down[0] : mul_n(down);
+          return "\\frac{" + to_latex(nu) + "}{" + to_latex(de) + "}";
+        }
+      }
       std::string s;
       size_t start = 0;
       if (is_num(e->kids[0]) && e->kids[0]->num.n == -1 && e->kids[0]->num.d == 1 &&
@@ -541,8 +585,10 @@ inline std::string to_latex(const E& e, int parent = 0) {
       const E& b = e->kids[0];
       const E& p = e->kids[1];
       if (is_num(p) && p->num == Rat(1, 2)) return "\\sqrt{" + to_latex(b) + "}";
-      if (is_num(p) && p->num.n == -1 && p->num.d == 1)
-        return "\\frac{1}{" + to_latex(b) + "}";
+      // 負の指数は分数で書く（-1 だけでなく -1/2 なども。往復で表示が変わらないように）
+      if (is_num(p) && p->num.neg())
+        return "\\frac{1}{" +
+               to_latex(p->num.n == -1 && p->num.d == 1 ? b : pow_e(b, num(-p->num))) + "}";
       std::string bs = to_latex(b, 4);
       if (b->k == Kind::Add || b->k == Kind::Mul || b->k == Kind::Pow) bs = "(" + bs + ")";
       return bs + "^{" + to_latex(p) + "}";
