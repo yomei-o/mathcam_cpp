@@ -29,6 +29,9 @@
   .stage { position: relative; display: inline-block; max-width: 100%; touch-action: none;
            border: 1px solid #8888; border-radius: 6px; min-width: 200px; min-height: 60px; }
   canvas { max-width: 100%; height: auto; display: block; border-radius: 6px; background: #fff; }
+  /* 写真は**幅いっぱいに出す**。小さく出ると囲む場所が狙えない */
+  #view { width: 100%; }
+  .stage { width: 100%; max-width: 1100px; }
   #over { position: absolute; left: 0; top: 0; width: 100%; height: 100%; pointer-events: none; }
   #cropwrap { display: none; margin: 8px 0; }
   #crop { border: 1px solid #8888; max-height: 160px; width: auto; }
@@ -50,7 +53,8 @@
 </style>
 
 <h1>mathcam_cpp — 数式の写真を読んで、解き方まで出す</h1>
-<div class="sub">記号検出も CAS も自前。ブラウザは CLI と同じ道を通ります（<code>pure/pipeline.hpp</code>）。</div>
+<div class="sub">記号検出も CAS も自前。ブラウザは CLI と同じ道を通ります（<code>pure/pipeline.hpp</code>）。
+<span id="ver" class="syms"></span></div>
 
 <div class="row">
   <button id="load">モデルを読む（12MB）</button>
@@ -141,6 +145,10 @@ for (const [src, label] of SAMPLES) {
   b.onclick = () => loadImage(src, true);
   $('samples').appendChild(b);
 }
+
+// **どの版を見ているかを出す。** Pages は 10 分キャッシュを返すので、直したのに直らない
+// ように見えることがある（実際にそれで話が食い違った）。強制リロードで新しくなる。
+$('ver').textContent = 'ページ更新 ' + document.lastModified;
 
 const setStatus = (t) => { $('status').textContent = t; };
 const conf = () => $('conf').value / 100;
