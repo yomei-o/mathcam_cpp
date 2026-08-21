@@ -342,7 +342,11 @@ def pow_e(b_in, e_in):
                     return num(rpow(Rat(rn, rd), up))
     if b.k == POW:                                            # (a^m)^n = a^(mn)
         inner = b.kids[1]
-        if is_num(inner) and is_num(p) and inner.num.is_int() and p.num.is_int():
+        # **内側が整数でないなら畳んでよい**（内側が根なら底は 0 以上でしか定義されない）。
+        # 内側が整数で外側が分数のときは畳めない（sqrt(x^2) は |x|）。C++ の pow_e と同じ。
+        # これが無いと `sqrt(y)/y` と `1/sqrt(y)` が別の木のまま同じ印字になる。
+        if is_num(inner) and is_num(p) and (
+                (inner.num.is_int() and p.num.is_int()) or not inner.num.is_int()):
             return pow_e(b.kids[0], num(inner.num * p.num))
     if b.k == MUL and is_num(p) and p.num.is_int():            # (ab)^n = a^n b^n
         return mul_n([pow_e(f, p) for f in b.kids])

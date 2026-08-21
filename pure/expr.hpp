@@ -281,7 +281,13 @@ inline E pow_e(const E& b_in, const E& e_in) {
   }
   if (b->k == Kind::Pow) {                                      // (a^m)^n = a^(mn)
     const E& in = b->kids[1];
-    if (is_num(in) && is_num(p) && in->num.is_int() && p->num.is_int())
+    // **内側が整数でないなら畳んでよい。** 内側が根（1/2 など）なら、底は実数の範囲で
+    // 0 以上でなければ元の式が定義されないので、指数を掛けても意味が変わらない。
+    // 逆に内側が整数で外側が分数のときは畳めない（sqrt(x^2) は |x| で、x ではない）。
+    //
+    // これが無いと `sqrt(y)/y` と `1/sqrt(y)` が**別の木のまま同じ印字**になり、
+    // 差を取っても 0 にならない（selftest 2000 件で 2 件、この形で落ちた）。
+    if (is_num(in) && is_num(p) && ((in->num.is_int() && p->num.is_int()) || !in->num.is_int()))
       return pow_e(b->kids[0], num(in->num * p->num));
   }
   if (b->k == Kind::Mul && is_num(p) && p->num.is_int()) {       // (ab)^n = a^n b^n

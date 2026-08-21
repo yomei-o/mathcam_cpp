@@ -99,6 +99,20 @@ def split_frac(e):
     return up, down
 
 
+def starts_with_digit(f):
+    """その因子は数字から描き始まるか（掛け算の記号を省いてよいかの判定。C++ と同じ規則）。"""
+    if X.is_num(f):
+        return f.num.is_int()
+    if f.k == X.POW:
+        p = f.kids[1]
+        if X.is_num(p) and (p.num == X.Rat(1, 2) or p.num.neg()):
+            return False                       # 根号・分数で描かれる
+        return starts_with_digit(f.kids[0])
+    if f.k == X.MUL and f.kids:
+        return starts_with_digit(f.kids[0])
+    return False
+
+
 def present(e, paren=False, st=None):
     st = st or Style()
     row = []
@@ -142,7 +156,11 @@ def present(e, paren=False, st=None):
             nu = X.num(1) if not up else (up[0] if len(up) == 1 else X.raw(X.MUL, up))
             de = down[0] if len(down) == 1 else X.raw(X.MUL, down)
             return pn(FRAC, [present(nu, False, st), present(de, False, st)])
-        for f in e.kids:
+        # 掛け算は記号を書かずに並べる。**ただし数のあとに数が来るときは × を書く**
+        # （並べると桁として読める。実測: `8 * 6^(3/2)` が `86^(3/2)` に読み戻された）
+        for i, f in enumerate(e.kids):
+            if i and X.is_num(e.kids[i - 1]) and starts_with_digit(f):
+                row.append(pg(0x00D7, "times"))
             row.append(present(f, f.k == X.ADD, st))
     elif e.k == X.POW:
         b, p = e.kids

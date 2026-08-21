@@ -128,6 +128,21 @@ inline void split_frac(const ex::E& e, std::vector<ex::E>& up, std::vector<ex::E
   }
 }
 
+// **その因子は数字から描き始まるか**（掛け算の記号を省いてよいかの判定に使う）。
+// 数のあとに数が並ぶと、人にも機械にも桁として読める（実測: `8 * 6^(3/2)` を並べて描くと
+// `86^(3/2)` と読み戻され、往復不変が壊れた）。根号や分数から始まるものは衝突しない。
+inline bool starts_with_digit(const ex::E& f) {
+  using namespace ex;
+  if (is_num(f)) return f->num.is_int();
+  if (f->k == Kind::Pow) {
+    if (is_num(f->kids[1]) && (f->kids[1]->num == Rat(1, 2) || f->kids[1]->num.neg()))
+      return false;                                  // 根号・分数で描かれる
+    return starts_with_digit(f->kids[0]);
+  }
+  if (f->k == Kind::Mul && !f->kids.empty()) return starts_with_digit(f->kids[0]);
+  return false;
+}
+
 inline P present(const ex::E& e, bool paren, const Style& st) {
   using namespace ex;
   std::vector<P> row;
@@ -174,8 +189,14 @@ inline P present(const ex::E& e, bool paren, const Style& st) {
         const E de = down.size() == 1 ? down[0] : raw(Kind::Mul, down);
         return pn(PK::Frac, {present(nu, false, st), present(de, false, st)});
       }
-      // 掛け算は記号を書かずに並べる（印刷数式の慣習。2x, 3(x+1)）
-      for (const E& f : e->kids) row.push_back(present(f, f->k == Kind::Add, st));
+      // 掛け算は記号を書かずに並べる（印刷数式の慣習。2x, 3(x+1)）。
+      // **ただし数のあとに数が来るときは × を書く**（並べると桁として読める）
+      for (size_t i = 0; i < e->kids.size(); ++i) {
+        const E& f = e->kids[i];
+        if (i && is_num(e->kids[i - 1]) && starts_with_digit(f))
+          row.push_back(pg(0x00D7, "times"));
+        row.push_back(present(f, f->k == Kind::Add, st));
+      }
       break;
     }
     case Kind::Pow: {
