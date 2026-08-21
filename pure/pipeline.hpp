@@ -75,7 +75,13 @@ inline Detected detect_syms(const onx::Graph& g, const unsigned char* rgb, int w
       if (iw <= 0 || ih <= 0) continue;
       const float inter = iw * ih;
       const float ua = (d.x2 - d.x1) * (d.y2 - d.y1) + (k.x2 - k.x1) * (k.y2 - k.y1) - inter;
+      // **入れ子の箱も落とす。** 同じ字に大小 2 つの箱が出ることがあり、IoU では残る
+      // （実測: `)` に (166,8)-(186,72) と (172,32)-(186,71) の 2 つが出て IoU 0.43。
+      // 小さいほうが完全に中にあるのに残り、「解釈できない記号: )」で解析が落ちた）。
+      const float amin = std::min((d.x2 - d.x1) * (d.y2 - d.y1),
+                                 (k.x2 - k.x1) * (k.y2 - k.y1));
       if (ua > 0 && inter / ua > 0.5f) { dup = true; break; }
+      if (amin > 0 && inter / amin > 0.8f) { dup = true; break; }
     }
     if (!dup) keep.push_back(d);
   }

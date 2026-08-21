@@ -6,7 +6,7 @@
 //   mathcam dataset --out data/train --n 2000 [--seed 1] [--px-min 32 --px-max 64]
 //   mathcam parse   --labels out.txt        枠の列から式木に戻す（レイアウト解析）
 //   mathcam selftest --n 500                組版 -> 解析 -> 元の式に戻るかを測る
-//   mathcam photo --img x.png --model models/sym_det.onnx [--steps]   写真 1 枚を端から端まで
+//   mathcam photo --img x.png --model models/sym_det_v4.onnx [--steps]   写真 1 枚を端から端まで
 //
 // build: sh build/cc.sh pure/mathcam.cpp -o mathcam.exe
 //        sh build/gcc.sh pure/mathcam.cpp -o mathcam.exe
@@ -525,7 +525,7 @@ static int cmd_e2e(int argc, char** argv) {
   const uint64_t seed = strtoull(arg_of(argc, argv, "--seed", "1").c_str(), nullptr, 10);
   const int px_min = std::atoi(arg_of(argc, argv, "--px-min", "28").c_str());
   const int px_max = std::atoi(arg_of(argc, argv, "--px-max", "72").c_str());
-  const std::string model_p = arg_of(argc, argv, "--model", "models/sym_det.onnx");
+  const std::string model_p = arg_of(argc, argv, "--model", "models/sym_det_v4.onnx");
   const std::string fontp = arg_of(argc, argv, "--font", "");
   const int imgsz = std::atoi(arg_of(argc, argv, "--imgsz", "640").c_str());
   const float conf = (float)atof(arg_of(argc, argv, "--conf", "0.25").c_str());
@@ -594,7 +594,7 @@ static int cmd_rgba(int argc, char** argv) {
 
 static int cmd_photo(int argc, char** argv) {
   const std::string img_p = arg_of(argc, argv, "--img", "");
-  const std::string model_p = arg_of(argc, argv, "--model", "models/sym_det.onnx");
+  const std::string model_p = arg_of(argc, argv, "--model", "models/sym_det_v4.onnx");
   const int imgsz = std::atoi(arg_of(argc, argv, "--imgsz", "640").c_str());
   const float conf = (float)atof(arg_of(argc, argv, "--conf", "0.25").c_str());
   const float nms = (float)atof(arg_of(argc, argv, "--nms", "0.45").c_str());
@@ -608,7 +608,7 @@ static int cmd_photo(int argc, char** argv) {
   const std::string crop = arg_of(argc, argv, "--crop", "");
   const std::string save_crop = arg_of(argc, argv, "--save-crop", "");
   if (img_p.empty()) {
-    printf("usage: mathcam photo --img x.png [--model models/sym_det.onnx] [--steps]\n"
+    printf("usage: mathcam photo --img x.png [--model models/sym_det_v4.onnx] [--steps]\n"
            "                     [--crop x0,y0,x1,y1] [--save-crop crop.png] [--conf 0.25]\n");
     return 1;
   }

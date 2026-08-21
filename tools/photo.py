@@ -1,6 +1,6 @@
 """写真 1 枚を端から端まで（Python 側）— pure/pipeline.hpp + photo の鏡。
 
-  python tools/photo.py --img q.png --model models/sym_det.onnx --steps
+  python tools/photo.py --img q.png --model models/sym_det_v4.onnx --steps
   python tools/photo.py --img test_data/image1.jpeg --crop 1180,480,1540,570 --show-syms
 
 C++ 側は自作の ONNX ランタイム、こちらは onnxruntime を使う（**推論の実装を合わせるのが
@@ -84,6 +84,11 @@ def nms_agnostic(dets, iou_thr=0.5):
             if ua > 0 and inter / ua > iou_thr:
                 dup = True
                 break
+            # **入れ子の箱も落とす**（同じ字に大小 2 つ出ると IoU では残る。C++ と同じ規則）
+            amin = min((d[3] - d[1]) * (d[4] - d[2]), (k[3] - k[1]) * (k[4] - k[2]))
+            if amin > 0 and inter / amin > 0.8:
+                dup = True
+                break
         if not dup:
             keep.append(d)
     return keep
@@ -148,7 +153,7 @@ def load_image(path, crop=""):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--img", required=True)
-    ap.add_argument("--model", default="models/sym_det.onnx")
+    ap.add_argument("--model", default="models/sym_det_v4.onnx")
     ap.add_argument("--crop", default="", help="x0,y0,x1,y1（実写のページから 1 式だけ取る）")
     ap.add_argument("--imgsz", type=int, default=640)
     ap.add_argument("--conf", type=float, default=0.25)

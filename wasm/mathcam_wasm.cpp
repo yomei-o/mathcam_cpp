@@ -1,6 +1,6 @@
 // WASM の入口 — ブラウザが CLI と同じ道を通る。
 //
-// ページが models/sym_det.onnx を取ってきてバイト列を渡し、RGBA のフレームを push すると、
+// ページが models/sym_det_v4.onnx を取ってきてバイト列を渡し、RGBA のフレームを push すると、
 // **記号の枠・読めた式・解き方の手順**が JSON で返る。推論ライブラリは使わない
 // （pure/onnx_run.hpp を emcc でビルドしたもの）。
 //
