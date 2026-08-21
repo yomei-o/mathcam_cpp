@@ -91,6 +91,8 @@ const SAMPLES = [
   ['samples/s3.png', '式の展開（方程式でないときは計算する）'],
   ['samples/s4.png', '二次（解の公式）'],
   ['samples/s5.png', '二次（係数つき）'],
+  ['samples/s6.png', '小学校の計算（× ÷ 小数点 中括弧）'],
+  ['samples/s7.png', '小学校の計算（帯分数）'],
 ];
 for (const [src, label] of SAMPLES) {
   const b = document.createElement('button');
@@ -234,14 +236,16 @@ function draw(m) {
     for (const l of lines) {
       const li = document.createElement('li');
       li.innerHTML = '<b>' + l.expr + '</b>  →  <span class="after">' +
-                     (l.answer || []).join(',  ') + '</span>';
+                     (l.answer || []).join(',  ') +
+                     (l.decimal ? ' = ' + l.decimal : '') + '</span>';
       ul.appendChild(li);
     }
     return;
   }
   $('expr').textContent = m.expr || '';
-  // 答えの文言は C++ 側（slv::answer_lines）が作る。CLI と同じ文になる
-  $('ans').textContent = (m.answer || []).join(',  ');
+  // 答えの文言は C++ 側（slv::answer_lines）が作る。CLI と同じ文になる。
+  // 小学校の計算は割り切れるときだけ小数も出す（1/3 を 0.333 と書いたら嘘になる）
+  $('ans').textContent = (m.answer || []).join(',  ') + (m.decimal ? '  = ' + m.decimal : '');
   for (const st of (m.steps || [])) {
     const li = document.createElement('li');
     li.innerHTML = '<span class="rule">[' + st.rule + ']</span> ' + st.note +

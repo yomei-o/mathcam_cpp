@@ -49,6 +49,11 @@ static std::string one_json(const pl::Result& r) {
     const ex::E v = ex::expand(r.e);
     js += ",\"kind\":\"value\",\"answer\":[\"" + esc(ex::to_infix(v)) + "\"]";
     js += ",\"answer_latex\":[\"" + esc(ex::to_latex(v)) + "\"]";
+    // 割り切れる分数は小数でも返す（小学校の計算は小数で答える）
+    if (ex::is_num(v) && !v->num.is_int()) {
+      const std::string dec = ex::to_decimal(v->num);
+      if (!dec.empty()) js += ",\"decimal\":\"" + esc(dec) + "\"";
+    }
     return js;
   }
   js += ",\"kind\":\"" + esc(sol.kind) + "\",\"var\":\"" + esc(sol.var) + "\",\"steps\":[";
