@@ -109,7 +109,7 @@ inline Rendered render(const Font& f, const Font* fi, const ex::E& e, int px,
   const int H = to_px((long long)(maxy - miny) + 2 * mg, px, f.upem);
   R.w = std::max(1, W);
   R.h = std::max(1, H);
-  R.gray.assign((size_t)R.w * R.h, 255);
+  R.gray.assign((size_t)R.w * R.h, (unsigned char)st.paper);
 
   const int ox = -minx + mg;                        // フォント単位での平行移動
   const int oy = maxy + mg;                         // 上端をこの位置に置く（y は上向き正のまま）
@@ -122,7 +122,7 @@ inline Rendered render(const Font& f, const Font* fi, const ex::E& e, int px,
       const int y1 = to_px((long long)oy - it.y0, px, f.upem);
       for (int y = std::max(0, y0); y < std::min(R.h, std::max(y1, y0 + 1)); ++y)
         for (int x = std::max(0, x0); x < std::min(R.w, x1); ++x)
-          R.gray[(size_t)y * R.w + x] = 0;
+          R.gray[(size_t)y * R.w + x] = (unsigned char)st.ink;
       R.cls.push_back(it.cls);
       R.box.push_back(x0); R.box.push_back(y0); R.box.push_back(x1);
       R.box.push_back(std::max(y1, y0 + 1));
@@ -143,7 +143,9 @@ inline Rendered render(const Font& f, const Font* fi, const ex::E& e, int px,
         for (int x = 0; x < gw; ++x) {
           const int dx = penx + gx0 + x, dy = peny + gy0 + y;
           if (dx < 0 || dy < 0 || dx >= R.w || dy >= R.h) continue;
-          const int v = 255 - bm[(size_t)y * gw + x];
+          // 被覆率で紙と字を混ぜる（ink=0, paper=255 なら今までと同じ 255 - 被覆率）
+          const int a = bm[(size_t)y * gw + x];
+          const int v = st.paper + (st.ink - st.paper) * a / 255;
           unsigned char& dst = R.gray[(size_t)dy * R.w + dx];
           if (v < dst) dst = (unsigned char)v;
         }
@@ -157,6 +159,22 @@ inline Rendered render(const Font& f, const Font* fi, const ex::E& e, int px,
     R.cls.push_back(it.cls);
     R.box.push_back(bx0); R.box.push_back(by0);
     R.box.push_back(std::max(bx1, bx0 + 1)); R.box.push_back(std::max(by1, by0 + 1));
+  }
+  // 3x3 の平均で 1 回ぼかす（撮影のぼけと JPEG の甘さの代わり。枠は変わらない）
+  if (st.blur) {
+    std::vector<unsigned char> src = R.gray;
+    for (int y = 0; y < R.h; ++y)
+      for (int x = 0; x < R.w; ++x) {
+        int sum = 0, n = 0;
+        for (int dy = -1; dy <= 1; ++dy)
+          for (int dx = -1; dx <= 1; ++dx) {
+            const int yy = y + dy, xx = x + dx;
+            if (yy < 0 || xx < 0 || yy >= R.h || xx >= R.w) continue;
+            sum += src[(size_t)yy * R.w + xx];
+            ++n;
+          }
+        R.gray[(size_t)y * R.w + x] = (unsigned char)(sum / n);
+      }
   }
   return R;
 }

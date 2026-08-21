@@ -43,11 +43,15 @@ class Style:
     学習データに無いだけで、端から端までの正解率が 95.0% -> 33.3% に落ちた。
     """
 
-    __slots__ = ("italic_vars", "minus_cp")
+    __slots__ = ("italic_vars", "minus_cp", "ink", "paper", "blur")
 
-    def __init__(self, italic_vars=False, minus_cp=ord("-")):
+    def __init__(self, italic_vars=False, minus_cp=ord("-"), ink=0, paper=255, blur=0):
         self.italic_vars = italic_vars
         self.minus_cp = minus_cp
+        # 写真は真っ黒と真っ白ではない（実測: 教科書の写真は紙 225 前後、字 60 前後）
+        self.ink = ink
+        self.paper = paper
+        self.blur = blur
 
 
 class PNode:
@@ -439,13 +443,14 @@ def layout_boxes(f, e, px, fi=None, st=None):
 def render(f, e, px, fi=None, st=None):
     """絵を描いて (PIL.Image, boxes) を返す。ラスタは C++ と一致しない（意図的、冒頭参照）。"""
     from PIL import Image, ImageDraw, ImageFont
+    st = st or Style()
     W, H, boxes, draw = layout_boxes(f, e, px, fi, st)
-    img = Image.new("L", (W, H), 255)
+    img = Image.new("L", (W, H), st.paper)
     d = ImageDraw.Draw(img)
     fonts = {}
     for kind, a, b, c, sn, sd, ital, _h in draw:
         if kind == "line":
-            d.rectangle([a, b, c - 1, sn - 1], fill=0)
+            d.rectangle([a, b, c - 1, sn - 1], fill=st.ink)
             continue
         # イタリックの字はその書体の upem で大きさを決める（em の大きさを合わせる）
         src = fi if (ital and fi is not None) else f
@@ -453,7 +458,10 @@ def render(f, e, px, fi=None, st=None):
         key = (size, 1 if src is fi else 0)
         if key not in fonts:
             fonts[key] = ImageFont.truetype(src.path, size)
-        d.text((a, b), chr(c), font=fonts[key], fill=0, anchor="ls")
+        d.text((a, b), chr(c), font=fonts[key], fill=st.ink, anchor="ls")
+    if st.blur:
+        from PIL import ImageFilter
+        img = img.filter(ImageFilter.BoxBlur(1))       # 3x3 の平均 1 回（C++ 側と同じ狙い）
     return img, boxes
 
 

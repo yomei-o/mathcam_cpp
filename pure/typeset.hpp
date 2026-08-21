@@ -87,9 +87,15 @@ inline P pn(PK k, std::vector<P> kids) {
 //   * minus_cp: マイナスの字。教科書は U+2212（長い横棒）で、ASCII の '-' より明らかに長い。
 //     実測: 本物の写真で U+2212 のマイナスは conf 0.01〜0.05 しか出なかった（学習データに
 //     '-' しか無いため）。クラス名は "-" のままなので、クラス表は増えない。
+//   * ink / paper: 字と紙の明るさ。写真は**真っ黒と真っ白ではない**（実測: 教科書の写真は
+//     紙 225 前後、字 60 前後）。既定は 0 / 255 なので、今までの絵と同じものが出る。
+//   * blur: 1 なら 3x3 の平均で 1 回ぼかす（撮影のぼけと JPEG の甘さの代わり）。
 struct Style {
   bool italic_vars = false;
   int minus_cp = '-';
+  int ink = 0;
+  int paper = 255;
+  int blur = 0;
 };
 
 inline void push_digits(std::vector<P>& out, long long v, const Style& st = Style()) {

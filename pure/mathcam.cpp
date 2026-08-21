@@ -188,6 +188,7 @@ static int cmd_dataset(int argc, char** argv) {
   const int ital_pct = std::atoi(arg_of(argc, argv, "--italic-pct", "50").c_str());
   const int minus_pct = std::atoi(arg_of(argc, argv, "--minus2212-pct", "50").c_str());
   const bool no_img = has_flag(argc, argv, "--no-images");   // 枠だけ作る（パリティ確認用）
+  const bool photo_like = has_flag(argc, argv, "--photo-like");
   if (dir.empty()) {
     printf("usage: mathcam dataset --out data/train --n 2000 [--seed 1] [--px-min 32]\n"
            "                       [--px-max 64] [--font path.ttf] [--font-italic path.ttf]\n"
@@ -224,12 +225,19 @@ static int cmd_dataset(int argc, char** argv) {
     const int px = (int)(px_min + (int)rng.below((uint64_t)(px_max - px_min + 1)));
     const bool use_ital = (int)rng.below(100) < ital_pct;
     const bool use_2212 = (int)rng.below(100) < minus_pct;
+    // 紙と字の明るさ・ぼけ。写真は真っ黒と真っ白ではない（実測: 紙 225 / 字 60 前後）
+    const int paper = photo_like ? (int)(215 + rng.below(41)) : 255;   // 215..255
+    const int ink = photo_like ? (int)(20 + rng.below(71)) : 0;        // 20..90
+    const int blur = photo_like ? (int)rng.below(2) : 0;
     std::string err;
     ex::E e = ex::parse(src, &err);
     if (!err.empty()) { ++skipped; continue; }        // 生成器が壊れた式を出したら捨てる
     ts::Style st;
     st.italic_vars = use_ital && has_i;
     st.minus_cp = use_2212 ? 0x2212 : '-';
+    st.paper = paper;
+    st.ink = ink;
+    st.blur = blur;
     const ts::Rendered R = ts::render(font, st.italic_vars ? &font_i : nullptr, e, px, st);
     char stem[40];
     snprintf(stem, sizeof stem, "%s%06d", prefix.c_str(), made);
