@@ -228,7 +228,32 @@ inline E pow_e(const E& b_in, const E& e_in) {
       const long long e = p->num.n;
       if (e > -32 && e < 32 && !(b->num.is_zero() && e < 0)) return num(rpow(b->num, e));
     }
-    // 分数指数でも「厳密に閉じるなら」畳む: sqrt(4) は 2 であって 4^(1/2) のまま残す理由がない。
+    // 分数指数のとき、まず**根号の中の完全冪を外に出す**: sqrt(8) は 2*sqrt(2) にする。
+    // これをやらないと x^2 = 2 の答えが 1/2*sqrt(8) と出て、厳密に計算している意味が薄れる。
+    if (is_num(b) && !p->num.is_int() && !b->num.neg() && p->num.n > 0) {
+      const long long q = p->num.d;
+      if (q > 1 && q <= 8) {
+        auto pull = [q](long long v, long long& outside, long long& inside) {
+          outside = 1; inside = v;
+          for (long long f = 2; f * f <= inside && f < 4096; ++f) {
+            long long pw = 1;
+            for (long long i = 0; i < q; ++i) pw *= f;      // f^q
+            if (pw <= 1) break;
+            while (inside % pw == 0) { inside /= pw; outside *= f; }
+          }
+        };
+        long long on = 1, in_n = b->num.n, od = 1, in_d = b->num.d;
+        pull(b->num.n, on, in_n);
+        pull(b->num.d, od, in_d);
+        if (on != 1 || od != 1) {
+          const Rat coef = rpow(Rat(on, od), p->num.n);       // 外に出た分（指数の分子は乗る）
+          const E rest = raw(Kind::Pow, {num(Rat(in_n, in_d)), p});
+          if (in_n == 1 && in_d == 1) return num(coef);
+          return mul_n({num(coef), rest});
+        }
+      }
+    }
+    // 厳密に閉じるなら畳む: sqrt(4) は 2 であって 4^(1/2) のまま残す理由がない。
     // 閉じないもの（sqrt(2)）は Pow のまま置く。整数根が取れるかを実際に試して確かめる。
     if (is_num(b) && !p->num.is_int() && b->num.d != 0) {
       const long long root = p->num.d, up = p->num.n;
@@ -438,9 +463,16 @@ inline std::string to_infix(const E& e, int parent) {
       return s;
     }
     case Kind::Mul: {
+      // 係数 -1 は "-1*x" ではなく "-x" と書く（人はそう書く）
       std::string s;
-      for (size_t i = 0; i < e->kids.size(); ++i) {
-        if (i) s += "*";
+      size_t start = 0;
+      if (is_num(e->kids[0]) && e->kids[0]->num.n == -1 && e->kids[0]->num.d == 1 &&
+          e->kids.size() > 1) {
+        s += "-";
+        start = 1;
+      }
+      for (size_t i = start; i < e->kids.size(); ++i) {
+        if (i > start) s += "*";
         s += wrap(e->kids[i], 2);
       }
       return s;
@@ -491,11 +523,17 @@ inline std::string to_latex(const E& e, int parent = 0) {
     case Kind::Mul: {
       // 有理数の係数は分数として前に出す（\frac{2}{3}x のように）
       std::string s;
-      for (size_t i = 0; i < e->kids.size(); ++i) {
+      size_t start = 0;
+      if (is_num(e->kids[0]) && e->kids[0]->num.n == -1 && e->kids[0]->num.d == 1 &&
+          e->kids.size() > 1) {
+        s += "-";
+        start = 1;
+      }
+      for (size_t i = start; i < e->kids.size(); ++i) {
         const E& f = e->kids[i];
         std::string t = to_latex(f, 2);
         if (f->k == Kind::Add) t = "(" + t + ")";
-        s += (i ? " " : "") + t;
+        s += (i > start ? " " : "") + t;
       }
       return s;
     }

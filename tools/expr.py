@@ -307,7 +307,30 @@ def pow_e(b_in, e_in):
             e = p.num.n
             if -32 < e < 32 and not (b.num.is_zero() and e < 0):
                 return num(rpow(b.num, e))
-        # 分数指数でも厳密に閉じるなら畳む（sqrt(4)=2）。閉じないもの（sqrt(2)）は残す
+        # まず根号の中の完全冪を外に出す（sqrt(8) -> 2*sqrt(2)）。これをやらないと
+        # x^2 = 2 の答えが 1/2*sqrt(8) と出て、厳密に計算している意味が薄れる
+        if is_num(b) and not p.num.is_int() and not b.num.neg() and p.num.n > 0:
+            q = p.num.d
+            if 1 < q <= 8:
+                def pull(v):
+                    outside, inside = 1, v
+                    f = 2
+                    while f * f <= inside and f < 4096:
+                        pw = f ** q
+                        if pw > 1:
+                            while inside % pw == 0:
+                                inside //= pw
+                                outside *= f
+                        f += 1
+                    return outside, inside
+                on, in_n = pull(b.num.n)
+                od, in_d = pull(b.num.d)
+                if on != 1 or od != 1:
+                    coef = rpow(Rat(on, od), p.num.n)
+                    if in_n == 1 and in_d == 1:
+                        return num(coef)
+                    return mul_n([num(coef), raw(POW, [num(Rat(in_n, in_d)), p])])
+        # 厳密に閉じるなら畳む（sqrt(4)=2）。閉じないもの（sqrt(2)）は残す
         if is_num(b) and not p.num.is_int() and not b.num.neg():
             root, up = p.num.d, p.num.n
             if 1 < root <= 8 and -32 < up < 32:
@@ -483,7 +506,12 @@ def to_infix(e):
             s += _wrap(body, 1)
         return s
     if e.k == MUL:
-        return "*".join(_wrap(c, 2) for c in e.kids)
+        # 係数 -1 は "-1*x" ではなく "-x" と書く（人はそう書く）
+        kids = list(e.kids)
+        pre = ""
+        if len(kids) > 1 and is_num(kids[0]) and kids[0].num.n == -1 and kids[0].num.d == 1:
+            pre, kids = "-", kids[1:]
+        return pre + "*".join(_wrap(c, 2) for c in kids)
     if e.k == POW:
         b, p = e.kids
         if is_num(p) and p.num == Rat(1, 2):
@@ -518,13 +546,17 @@ def to_latex(e):
             s += to_latex(body)
         return s
     if e.k == MUL:
+        kids = list(e.kids)
+        pre = ""
+        if len(kids) > 1 and is_num(kids[0]) and kids[0].num.n == -1 and kids[0].num.d == 1:
+            pre, kids = "-", kids[1:]
         parts = []
-        for f in e.kids:
+        for f in kids:
             t = to_latex(f)
             if f.k == ADD:
                 t = "(" + t + ")"
             parts.append(t)
-        return " ".join(parts)
+        return pre + " ".join(parts)
     if e.k == POW:
         b, p = e.kids
         if is_num(p) and p.num == Rat(1, 2):

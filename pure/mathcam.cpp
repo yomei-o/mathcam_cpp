@@ -1,11 +1,12 @@
 // mathcam — このプロジェクトの CLI（C++ 側）。tools/ の Python 側と 1 対 1 に対応させる。
 //
 //   mathcam eval  --expr "2/3 + 1/6"          式を読んで正規形と答えを出す
-//   mathcam eval  --expr "x^2 - 5x + 6 = 0" --steps   手順つきで解く（実装は次の段）
+//   mathcam solve --expr "x^2 - 5x + 6 = 0" [--steps] [--latex]  解く（手順つき）
 //
 // build: sh build/cc.sh pure/mathcam.cpp -o mathcam.exe
 //        sh build/gcc.sh pure/mathcam.cpp -o mathcam.exe
 #include "expr.hpp"
+#include "solve.hpp"
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -45,16 +46,50 @@ static int cmd_eval(int argc, char** argv) {
   return 0;
 }
 
+// mathcam solve — 方程式を解く。--steps で「人が紙に書く手」を並べる。
+// 正規化（同類項をまとめる・約分）は手順に出さない。出すと人には読めないものになる。
+static int cmd_solve(int argc, char** argv) {
+  const std::string src = arg_of(argc, argv, "--expr", "");
+  const std::string var = arg_of(argc, argv, "--var", "");
+  const bool steps = has_flag(argc, argv, "--steps");
+  const bool latex = has_flag(argc, argv, "--latex");
+  if (src.empty()) {
+    printf("usage: mathcam solve --expr \"x^2 - 5x + 6 = 0\" [--var x] [--steps] [--latex]\n");
+    return 1;
+  }
+  std::string why;
+  ex::E e = ex::parse(src, &why);
+  if (!why.empty()) { printf("parse error: %s\n", why.c_str()); return 1; }
+
+  const slv::Solution s = slv::solve(e, var);
+  auto show = [&](const ex::E& x) { return latex ? ex::to_latex(x) : ex::to_infix(x); };
+  if (!s.ok) { printf("solve: %s\n", s.why.c_str()); return 1; }
+  if (steps) {
+    for (size_t i = 0; i < s.steps.size(); ++i) {
+      const slv::Step& st = s.steps[i];
+      printf("%zu. [%s] %s\n", i + 1, st.rule.c_str(), st.note.c_str());
+      printf("   %s\n", show(st.after).c_str());
+    }
+  }
+  if (s.kind == "identity") { printf("すべての値で成り立つ\n"); return 0; }
+  if (s.kind == "contradiction") { printf("解なし（矛盾）\n"); return 0; }
+  if (s.roots.empty()) { printf("実数解なし\n"); return 0; }
+  for (size_t i = 0; i < s.roots.size(); ++i)
+    printf("%s = %s\n", s.var.c_str(), show(s.roots[i]).c_str());
+  return 0;
+}
+
 int main(int argc, char** argv) {
 #ifdef _WIN32
   SetConsoleOutputCP(CP_UTF8);
 #endif
   if (argc < 2) {
-    printf("usage: mathcam <eval> ...\n");
+    printf("usage: mathcam <eval|solve> ...\n");
     return 1;
   }
   const std::string cmd = argv[1];
   if (cmd == "eval") return cmd_eval(argc, argv);
+  if (cmd == "solve") return cmd_solve(argc, argv);
   printf("mathcam: '%s' is not implemented yet\n", cmd.c_str());
   return 1;
 }
