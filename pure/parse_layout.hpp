@@ -1,0 +1,385 @@
+// レイアウト解析 — 記号の枠の列を式木に戻す。
+//
+// 認識の後半である。検出器が出すのは「クラスと枠」の集まりで、そこには**構造が無い**。
+// x^2 と x2、a/b と ab の違いは位置関係だけで決まる。ここがその位置関係を読む場所。
+//
+// なぜ規則ベースか: 合成データには**正解の式**があるので、この解析器の正解率を単体で測れる
+// （`mathcam selftest`）。学習モデルにすると「検出器の誤りか解析器の誤りか」が切り分けられない。
+//
+// **設計（1 度目の書き方を捨てた理由）**
+// 最初は「分数を探す -> 根号を探す -> 残りを ± で割る」の順に書いたが、これは順序が逆で、
+// 切り出した分数の左右に残った記号の扱いが場当たりになり、正解率 39% で止まった
+// （`t/3 + 1 = -2` が「解釈できない記号: +」で落ちるなど）。正しい形は:
+//
+//   1. **構造を畳む**。分数（横線）・根号（上線）・括弧を見つけ、その中身を再帰的に解析して、
+//      **1 個の原子**（すでに式が入っている疑似記号）に置き換える。外側から内側へ。
+//   2. 残った平らな列を、**優先順位どおり**に割る: `=` -> `±` -> 並置（掛け算）と上付き。
+//
+// こうすると、± の分割は「同じ深さの平らな列」に対してだけ行われ、分数の中の + と外の + を
+// 取り違えることがなくなる。
+#pragma once
+#include "expr.hpp"
+#include <algorithm>
+#include <cmath>
+#include <string>
+#include <vector>
+
+namespace pl {
+
+struct Sym {
+  std::string cls;                      // "0".."9", "x", "+", "-", "=", "(", ")", "sqrt", "frac"
+  int x0 = 0, y0 = 0, x1 = 0, y1 = 0;   // 画素（y は下向き）
+  // **ベースラインの y**。上付きの判定は箱の下端ではなくこれで行う。
+  // 箱の下端で判定すると、分数（下に伸びる）は上付きに見えず、括弧（下に伸びる）の次の記号が
+  // 上付きに見える。実測: 7x^(3/2) が 7*x*(3/2)、(x+5)x^3 が (x+5)^(x^3) に化けた。
+  int base_y = 0;
+  // 構造を畳んだ原子。set なら cls は "@" で、e に解析済みの式が入っている
+  bool atom = false;
+  ex::E e;
+  int cx() const { return (x0 + x1) / 2; }
+  int cy() const { return (y0 + y1) / 2; }
+  int w() const { return x1 - x0; }
+  int h() const { return y1 - y0; }
+};
+
+struct Result {
+  bool ok = false;
+  std::string why;
+  ex::E e;
+  std::string text;
+};
+
+// 閾値（記号の大きさに対する比。実測で詰める）
+enum : int {
+  T_SUP_RISE = 30,        // 上付きと見なす持ち上がり（基準の高さに対する %）
+  T_SUP_SMALL = 90,       // 上付きは基準より小さい（高さの比が % 以下）
+  T_SAME_LINE = 35,       // 同じ行と見なす中心のずれ（高さに対する %）
+  T_DIGIT_GAP = 40,       // 桁をつなぐ隙間の上限（高さに対する %）
+};
+
+inline bool by_x(const Sym& a, const Sym& b) { return a.x0 < b.x0; }
+
+// 基準の高さ。**畳んだ原子は数えない**（分数や括弧を含む原子は縦に長いので、これを基準に
+// すると上付きの閾値が大きくなりすぎ、(x - 9/4)^3 の 3 を拾えなくなる）。
+inline int median_h(const std::vector<Sym>& v) {
+  std::vector<int> hs;
+  for (const Sym& s : v)
+    if (!s.atom && s.cls != "-" && s.cls != "frac" && s.cls != "=") hs.push_back(s.h());
+  if (hs.empty()) return v.empty() ? 1 : std::max(1, v[0].h());
+  std::sort(hs.begin(), hs.end());
+  return std::max(1, hs[hs.size() / 2]);
+}
+
+ex::E parse_flat(std::vector<Sym> v, std::string* why);
+
+inline Sym make_atom(const ex::E& e, int x0, int y0, int x1, int y1, int base_y) {
+  Sym s;
+  s.cls = "@";
+  s.atom = true;
+  s.e = e;
+  s.x0 = x0; s.y0 = y0; s.x1 = x1; s.y1 = y1;
+  s.base_y = base_y;
+  return s;
+}
+
+// 記号列のベースライン（いちばん下にあるベースライン）。畳んだ原子に持たせる値
+inline int run_baseline(const std::vector<Sym>& v) {
+  int b = 0;
+  bool any = false;
+  for (const Sym& s : v) {
+    if (s.cls == "frac" || s.cls == "sqrt") continue;      // 線はベースラインを持たない
+    if (!any || s.base_y > b) { b = s.base_y; any = true; }
+  }
+  return any ? b : (v.empty() ? 0 : v[0].y1);
+}
+
+// ---------------------------------------------------------------- 1) 構造を畳む
+
+// 分数線のうち、いちばん幅の広いもの（外側から処理するため）
+inline int widest_frac(const std::vector<Sym>& v) {
+  int best = -1;
+  for (size_t i = 0; i < v.size(); ++i)
+    if (!v[i].atom && v[i].cls == "frac" && (best < 0 || v[i].w() > v[(size_t)best].w()))
+      best = (int)i;
+  return best;
+}
+
+// 根号の上線（幅の広い "sqrt"）。根号記号そのものは幅が狭いので、幅で見分ける
+inline int widest_sqrt_bar(const std::vector<Sym>& v) {
+  int best = -1;
+  for (size_t i = 0; i < v.size(); ++i)
+    if (!v[i].atom && v[i].cls == "sqrt" && v[i].h() * 3 < v[i].w() &&
+        (best < 0 || v[i].w() > v[(size_t)best].w()))
+      best = (int)i;
+  return best;
+}
+
+inline int first_open_paren(const std::vector<Sym>& v) {
+  for (size_t i = 0; i < v.size(); ++i)
+    if (!v[i].atom && v[i].cls == "(") return (int)i;
+  return -1;
+}
+
+inline int match_close(const std::vector<Sym>& v, int i) {
+  int depth = 0;
+  for (size_t k = (size_t)i; k < v.size(); ++k) {
+    if (v[k].atom) continue;
+    if (v[k].cls == "(") ++depth;
+    else if (v[k].cls == ")") { if (--depth == 0) return (int)k; }
+  }
+  return -1;
+}
+
+// 構造を 1 つ畳む。畳んだら true。無ければ false。
+//
+// **外側の構造から畳む。** 分数線と根号の上線のうち**幅の広い方**を先に処理する。
+// 内側から畳むと、外側の構造の一部（根号の上線など）が内側の集合に混ざり、外側に記号だけが
+// 取り残される（実測: `sqrt(7/48)` で分子の集合に上線が入り、根号記号が余って
+// 「解釈できない記号: sqrt」になった）。
+inline bool collapse_one(std::vector<Sym>& v, std::string* why) {
+  using namespace ex;
+
+  const int fi_c = widest_frac(v);
+  const int bi_c = widest_sqrt_bar(v);
+  const int fw = fi_c >= 0 ? v[(size_t)fi_c].w() : -1;
+  const int bw = bi_c >= 0 ? v[(size_t)bi_c].w() : -1;
+
+  // --- 分数（根号の上線より広いときだけ先に） ---
+  const int fi = (fw >= bw) ? fi_c : -1;
+  if (fi >= 0) {
+    const Sym bar = v[(size_t)fi];
+    std::vector<Sym> up, down, rest;
+    int ux0 = bar.x0, uy0 = bar.y0, ux1 = bar.x1, uy1 = bar.y1;
+    for (size_t i = 0; i < v.size(); ++i) {
+      if ((int)i == fi) continue;
+      const Sym& s = v[i];
+      const bool inside = s.cx() >= bar.x0 - 2 && s.cx() <= bar.x1 + 2;
+      if (!inside) { rest.push_back(s); continue; }
+      (s.cy() < bar.cy() ? up : down).push_back(s);
+      ux0 = std::min(ux0, s.x0); uy0 = std::min(uy0, s.y0);
+      ux1 = std::max(ux1, s.x1); uy1 = std::max(uy1, s.y1);
+    }
+    if (up.empty() || down.empty()) { *why = "分数の上か下が空です"; return false; }
+    const E nu = parse_flat(up, why);
+    if (!why->empty()) return false;
+    const E de = parse_flat(down, why);
+    if (!why->empty()) return false;
+    rest.push_back(make_atom(div(nu, de), ux0, uy0, ux1, uy1, bar.cy()));
+    // 原子を末尾に足したので**必ず並べ直す**。これを忘れると、以降の = や ± の分割が
+    // 位置と無関係な順序で行われる（実測: `x/4 + 5 = 2` が `5 = (x/4)^2` に化けた）
+    std::sort(rest.begin(), rest.end(), by_x);
+    v = rest;
+    return true;
+  }
+
+  // --- 根号 ---
+  const int bi = bi_c;
+  if (bi >= 0) {
+    const Sym bar = v[(size_t)bi];
+    std::vector<Sym> in, rest;
+    int ux0 = bar.x0, uy0 = bar.y0, ux1 = bar.x1, uy1 = bar.y1;
+    for (size_t i = 0; i < v.size(); ++i) {
+      if ((int)i == bi) continue;
+      const Sym& s = v[i];
+      // 上線の真下にあるものが中身。根号記号（幅が狭い "sqrt"）は上線の左にあるので外れる
+      const bool under = s.cx() >= bar.x0 - 2 && s.cx() <= bar.x1 + 2 && s.cy() > bar.cy();
+      if (!under) { rest.push_back(s); continue; }
+      in.push_back(s);
+      ux0 = std::min(ux0, s.x0); uy0 = std::min(uy0, s.y0);
+      ux1 = std::max(ux1, s.x1); uy1 = std::max(uy1, s.y1);
+    }
+    if (in.empty()) { *why = "根号の中身がありません"; return false; }
+    // 根号記号そのもの（上線の左にある狭い "sqrt"）を消す。
+    // 条件を「右端が上線の左端より左」にしていたら、字形が上線に食い込む場合に消えず、
+    // 記号が余って「解釈できない記号: sqrt」で落ちた（実測: sqrt((7)/(48))）。
+    // 左端で見るようにする。
+    // 上線の**すぐ左にある**ものを 1 つだけ消す。「x0 が上線の左端以下」で探すと、
+    // 根号が 2 つ並んでいるとき（sqrt(12) - sqrt(x)）に左側の根号を消してしまい、
+    // 記号が余る。いちばん近いものを選ぶ。
+    int cand = -1;
+    for (size_t i = 0; i < rest.size(); ++i) {
+      const Sym& s = rest[i];
+      if (s.atom || s.cls != "sqrt") continue;
+      if (s.h() * 3 < s.w()) continue;                    // 上線ではなく記号だけを対象にする
+      if (s.x0 > bar.x0 + 2) continue;
+      if (cand < 0 || s.x0 > rest[(size_t)cand].x0) cand = (int)i;
+    }
+    if (cand >= 0) {
+      ux0 = std::min(ux0, rest[(size_t)cand].x0);
+      uy1 = std::max(uy1, rest[(size_t)cand].y1);
+      rest.erase(rest.begin() + (long)cand);
+    }
+    const E e = parse_flat(in, why);
+    if (!why->empty()) return false;
+    rest.push_back(make_atom(fn_e("sqrt", {e}), ux0, uy0, ux1, uy1, run_baseline(in)));
+    std::sort(rest.begin(), rest.end(), by_x);
+    v = rest;
+    return true;
+  }
+
+  // --- 括弧 ---
+  const int pi = first_open_paren(v);
+  if (pi >= 0) {
+    const int pj = match_close(v, pi);
+    if (pj < 0) { *why = "括弧が閉じていません"; return false; }
+    std::vector<Sym> in(v.begin() + (long)pi + 1, v.begin() + (long)pj);
+    if (in.empty()) { *why = "括弧の中が空です"; return false; }
+    const E e = parse_flat(in, why);
+    if (!why->empty()) return false;
+    int ux0 = v[(size_t)pi].x0, uy0 = v[(size_t)pi].y0;
+    int ux1 = v[(size_t)pj].x1, uy1 = v[(size_t)pj].y1;
+    for (const Sym& s : in) {
+      uy0 = std::min(uy0, s.y0);
+      uy1 = std::max(uy1, s.y1);
+    }
+    std::vector<Sym> out(v.begin(), v.begin() + (long)pi);
+    out.push_back(make_atom(e, ux0, uy0, ux1, uy1, run_baseline(in)));
+    for (size_t k = (size_t)pj + 1; k < v.size(); ++k) out.push_back(v[k]);
+    v = out;
+    return true;
+  }
+  return false;
+}
+
+// ---------------------------------------------------------------- 2) 平らな列を割る
+
+inline bool is_digit_cls(const Sym& s) {
+  return !s.atom && s.cls.size() >= 1 && isdigit((unsigned char)s.cls[0]);
+}
+
+// 隣り合う桁をまとめる（同じ行にあって、隙間が狭いものだけ）
+inline void merge_digits(std::vector<Sym>& v) {
+  for (size_t i = 0; i + 1 < v.size();) {
+    if (is_digit_cls(v[i]) && is_digit_cls(v[i + 1])) {
+      const int h = std::max(v[i].h(), v[i + 1].h());
+      const int gap = v[i + 1].x0 - v[i].x1;
+      const bool same_line = std::abs(v[i].cy() - v[i + 1].cy()) * 100 <= h * T_SAME_LINE;
+      const bool same_size = std::abs(v[i].h() - v[i + 1].h()) * 100 <= h * 25;
+      if (same_line && same_size && gap * 100 <= h * T_DIGIT_GAP) {
+        v[i].cls += v[i + 1].cls;
+        v[i].x1 = v[i + 1].x1;
+        v[i].y0 = std::min(v[i].y0, v[i + 1].y0);
+        v[i].y1 = std::max(v[i].y1, v[i + 1].y1);
+        v.erase(v.begin() + (long)i + 1);
+        continue;
+      }
+    }
+    ++i;
+  }
+}
+
+inline long long to_int(const std::string& s) {
+  long long v = 0;
+  for (char c : s) v = v * 10 + (c - '0');
+  return v;
+}
+
+inline ex::E leaf(const Sym& s, std::string* why) {
+  using namespace ex;
+  if (s.atom) return s.e;
+  if (is_digit_cls(s)) return num(to_int(s.cls));
+  if (s.cls.size() == 1 && isalpha((unsigned char)s.cls[0])) return sym(s.cls);
+  *why = "解釈できない記号: " + s.cls;
+  return num(Rat(0));
+}
+
+// s が base の上付きか。
+//
+// **判定はベースラインの差で行う**（大きさの比では駄目）。最初は「上付きは親より小さい」と
+// 書いたが、親が x のような背の低い字だと、0.7 倍に縮めた数字のほうが背が高くなる
+// （実測: x の高さ 916、上付きの 2 が 968）。それで `3x^2 + x` が `3*x*2 + x = 7x` に
+// 化けていた。人が見て分かるのは「下端が親の下端より上に浮いているか」なので、そう書く。
+inline bool is_sup(const Sym& base, const Sym& s, int h_ref) {
+  const int lift0 = base.base_y - s.base_y;
+  // 演算子は上付きにならない。ただし "-" だけは例外で、**十分に持ち上がっていれば**
+  // 負の指数の符号として認める（組版側は分数で描くので普段は出ないが、写真から来た式では出る）
+  if (!s.atom && (s.cls == "+" || s.cls == "=")) return false;
+  if (!s.atom && s.cls == "-" && lift0 * 100 < h_ref * 60) return false;
+  const int lift = lift0;                              // y は下向き。s が上にあると正
+  if (lift * 100 < h_ref * T_SUP_RISE) return false;
+  // 背の高いもの（括弧など）が隣に来ただけのときを弾く。ただし**十分に持ち上がっている**なら
+  // 大きさは問わない（指数が分数だと縦に長くなる。実測: 7x^(3/2) がこれで弾かれていた）。
+  if (lift * 100 >= h_ref * 60) return true;
+  return s.h() * 100 <= h_ref * 130;
+}
+
+inline ex::E parse_flat(std::vector<Sym> v, std::string* why) {
+  using namespace ex;
+  if (v.empty()) { *why = "記号がありません"; return num(Rat(0)); }
+  std::sort(v.begin(), v.end(), by_x);
+
+  // 1) 構造を全部畳む（外側から内側へ）
+  while (collapse_one(v, why)) {
+    if (!why->empty()) return num(Rat(0));
+  }
+  if (!why->empty()) return num(Rat(0));
+
+  // 2) 桁をまとめる
+  merge_digits(v);
+
+  // 3) = で割る
+  for (size_t i = 0; i < v.size(); ++i)
+    if (!v[i].atom && v[i].cls == "=") {
+      std::vector<Sym> l(v.begin(), v.begin() + (long)i), r(v.begin() + (long)i + 1, v.end());
+      const E a = parse_flat(l, why);
+      if (!why->empty()) return num(Rat(0));
+      const E b = parse_flat(r, why);
+      if (!why->empty()) return num(Rat(0));
+      return eq(a, b);
+    }
+
+  // 4) ± で割る（右から。左結合にするため）。先頭の ± は単項として扱う
+  for (size_t i = v.size(); i-- > 1;) {
+    if (v[i].atom) continue;
+    const std::string& c = v[i].cls;
+    if (c != "+" && c != "-") continue;
+    std::vector<Sym> l(v.begin(), v.begin() + (long)i), r(v.begin() + (long)i + 1, v.end());
+    if (l.empty() || r.empty()) { *why = "演算子の両側が空です"; return num(Rat(0)); }
+    const E a = parse_flat(l, why);
+    if (!why->empty()) return num(Rat(0));
+    const E b = parse_flat(r, why);
+    if (!why->empty()) return num(Rat(0));
+    return c == "+" ? add(a, b) : sub(a, b);
+  }
+  if (!v[0].atom && (v[0].cls == "+" || v[0].cls == "-") && v.size() > 1) {
+    std::vector<Sym> r(v.begin() + 1, v.end());
+    const E a = parse_flat(r, why);
+    if (!why->empty()) return num(Rat(0));
+    return v[0].cls == "-" ? neg(a) : a;
+  }
+
+  // 5) 並置（掛け算）と上付き
+  const int h_ref = median_h(v);
+  std::vector<E> factors;
+  for (size_t i = 0; i < v.size();) {
+    const Sym base = v[i];
+    E b = leaf(base, why);
+    if (!why->empty()) return num(Rat(0));
+    size_t k = i + 1;
+    std::vector<Sym> sup;
+    while (k < v.size() && is_sup(base, v[k], h_ref)) sup.push_back(v[k++]);
+    if (!sup.empty()) {
+      const E p = parse_flat(sup, why);
+      if (!why->empty()) return num(Rat(0));
+      b = pow_e(b, p);
+    }
+    factors.push_back(b);
+    i = k;
+  }
+  if (factors.empty()) { *why = "式になりません"; return num(Rat(0)); }
+  E r = factors[0];
+  for (size_t i = 1; i < factors.size(); ++i) r = mul(r, factors[i]);
+  return r;
+}
+
+inline Result parse(const std::vector<Sym>& in) {
+  Result r;
+  std::string why;
+  r.e = parse_flat(in, &why);
+  if (!why.empty()) { r.why = why; return r; }
+  r.ok = true;
+  r.text = ex::to_infix(r.e);
+  return r;
+}
+
+}  // namespace pl

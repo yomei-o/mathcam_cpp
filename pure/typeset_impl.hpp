@@ -83,10 +83,10 @@ inline Rendered render(const Font& f, const ex::E& e, int px) {
   // 実際に置かれたものの範囲を取る（layout の box より、描いた枠の合併のほうが正確）
   int minx = 0, maxx = L.box.w, miny = -L.box.desc, maxy = L.box.asc;
   for (const Item& it : L.items) {
-    const int bx0 = it.cp ? it.x + it.x0 : it.x0;
-    const int by0 = it.cp ? it.y + it.y0 : it.y0;
-    const int bx1 = it.cp ? it.x + it.x1 : it.x1;
-    const int by1 = it.cp ? it.y + it.y1 : it.y1;
+    // bbox は shift() で既に絶対座標になっている。ここで it.x を足すと二重加算になる
+    // （実際にそう書いていて、ラベルの枠だけが 2 倍の位置に出ていた。絵は it.x を使う
+    //  ラスタ側だけ正しかったので、見た目では気付けなかった）。
+    const int bx0 = it.x0, by0 = it.y0, bx1 = it.x1, by1 = it.y1;
     minx = std::min(minx, bx0); maxx = std::max(maxx, bx1);
     miny = std::min(miny, by0); maxy = std::max(maxy, by1);
   }
@@ -133,11 +133,12 @@ inline Rendered render(const Font& f, const ex::E& e, int px) {
           if (v < dst) dst = (unsigned char)v;
         }
     }
-    // 正解枠はフォント単位の bbox から作る（ラスタの端の薄い画素に左右されないため）
-    const int bx0 = to_px((long long)it.x + it.x0 + ox, px, f.upem);
-    const int bx1 = to_px((long long)it.x + it.x1 + ox, px, f.upem);
-    const int by0 = to_px((long long)oy - (it.y + it.y1), px, f.upem);
-    const int by1 = to_px((long long)oy - (it.y + it.y0), px, f.upem);
+    // 正解枠はフォント単位の bbox から作る（ラスタの端の薄い画素に左右されないため）。
+    // bbox は絶対座標なので it.x / it.y を足さない（足すと二重加算）
+    const int bx0 = to_px((long long)it.x0 + ox, px, f.upem);
+    const int bx1 = to_px((long long)it.x1 + ox, px, f.upem);
+    const int by0 = to_px((long long)oy - it.y1, px, f.upem);
+    const int by1 = to_px((long long)oy - it.y0, px, f.upem);
     R.cls.push_back(it.cls);
     R.box.push_back(bx0); R.box.push_back(by0);
     R.box.push_back(std::max(bx1, bx0 + 1)); R.box.push_back(std::max(by1, by0 + 1));

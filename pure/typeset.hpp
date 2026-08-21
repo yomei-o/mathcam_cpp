@@ -163,6 +163,12 @@ inline P present(const ex::E& e, bool paren) {
       const E& b = e->kids[0];
       const E& p = e->kids[1];
       if (is_num(p) && p->num == Rat(1, 2)) return pn(PK::Sqrt, {present(b)});
+      // **負の指数は分数で描く**（人は y^-1 ではなく 1/y と書く）。上付きで描くと、
+      // 解析側が指数の "-" を二項の引き算と取り違える（実測: 1/y が y - 1 になった）。
+      if (is_num(p) && p->num.neg()) {
+        const E inv = p->num.n == -1 && p->num.d == 1 ? b : raw(Kind::Pow, {b, num(-p->num)});
+        return pn(PK::Frac, {present(num(Rat(1))), present(inv)});
+      }
       return pn(PK::Sup, {present(b, b->k == Kind::Add || b->k == Kind::Mul), present(p)});
     }
     case Kind::Fn: {

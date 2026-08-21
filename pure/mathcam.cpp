@@ -4,6 +4,8 @@
 //   mathcam solve --expr "x^2 - 5x + 6 = 0" [--steps] [--latex]  解く（手順つき）
 //   mathcam render --expr "1/2 x + sqrt(2) = 0" --out out.png [--labels out.txt] [--px 48]
 //   mathcam dataset --out data/train --n 2000 [--seed 1] [--px-min 32 --px-max 64]
+//   mathcam parse   --labels out.txt        枠の列から式木に戻す（レイアウト解析）
+//   mathcam selftest --n 500                組版 -> 解析 -> 元の式に戻るかを測る
 //
 // build: sh build/cc.sh pure/mathcam.cpp -o mathcam.exe
 //        sh build/gcc.sh pure/mathcam.cpp -o mathcam.exe
@@ -14,6 +16,7 @@
 #include "solve.hpp"
 #include "typeset_impl.hpp"
 #include "gen_expr.hpp"
+#include "parse_layout.hpp"
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -236,12 +239,126 @@ static int cmd_genexpr(int argc, char** argv) {
   return 0;
 }
 
+// mathcam parse — 記号の枠の列（render --labels の出力形式）から式木に戻す。
+static int cmd_parse(int argc, char** argv) {
+  const std::string lp = arg_of(argc, argv, "--labels", "");
+  if (lp.empty()) { printf("usage: mathcam parse --labels out.txt\n"); return 1; }
+  FILE* f = fopen(lp.c_str(), "rb");
+  if (!f) { printf("cannot read %s\n", lp.c_str()); return 1; }
+  std::vector<pl::Sym> syms;
+  char line[512];
+  while (fgets(line, sizeof line, f)) {
+    if (line[0] == '#' || line[0] == 0 || line[0] == 10) continue;
+    char cls[64] = {0};
+    int a = 0, b = 0, c = 0, d = 0;
+    if (sscanf(line, "%63s %d %d %d %d", cls, &a, &b, &c, &d) == 5) {
+      pl::Sym s;
+      s.cls = cls; s.x0 = a; s.y0 = b; s.x1 = c; s.y1 = d;
+      s.base_y = d;   // 単独の記号はベースライン ≒ 箱の下端
+      syms.push_back(s);
+    }
+  }
+  fclose(f);
+  const pl::Result r = pl::parse(syms);
+  if (!r.ok) { printf("parse failed: %s\n", r.why.c_str()); return 1; }
+  printf("%s\n", r.text.c_str());
+  return 0;
+}
+
+// mathcam selftest — 組版 -> レイアウト解析 -> 元の式に戻るか。**検出器なしで測れる**ので、
+// 解析器の正解率をここで詰めてから GPU に行く（検出器の誤りと解析器の誤りを混ぜないため）。
+static int cmd_selftest(int argc, char** argv) {
+  const int n = std::atoi(arg_of(argc, argv, "--n", "200").c_str());
+  const uint64_t seed = strtoull(arg_of(argc, argv, "--seed", "1").c_str(), nullptr, 10);
+  const int px = std::atoi(arg_of(argc, argv, "--px", "48").c_str());
+  const std::string fontp = arg_of(argc, argv, "--font", "");
+  const bool show = has_flag(argc, argv, "--show-fail");
+  std::string why;
+  ts::Font font;
+  if (!ts::load_font(font, fontp, &why)) { printf("%s\n", why.c_str()); return 1; }
+
+  Rng rng(seed);
+  int ok = 0, bad = 0, skipped = 0, shown = 0;
+  for (int i = 0; i < n; ++i) {
+    const std::string src = gx::one(rng);
+    ex::E e = ex::parse(src, &why);
+    if (!why.empty()) { ++skipped; continue; }
+    // 分母が 0 になる式（生成器が y - y を作ることがある）は比べても意味がないので捨てる
+    {
+      bool degenerate = false;
+      std::vector<ex::E> stack{e};
+      while (!stack.empty()) {
+        const ex::E t = stack.back();
+        stack.pop_back();
+        if (t->k == ex::Kind::Pow && ex::is_num(t->kids[0]) && t->kids[0]->num.is_zero() &&
+            ex::is_num(t->kids[1]) && t->kids[1]->num.neg())
+          degenerate = true;
+        for (const ex::E& c : t->kids) stack.push_back(c);
+      }
+      if (degenerate) { ++skipped; continue; }
+    }
+    const ts::Rendered R = ts::render(font, e, px);
+    std::vector<pl::Sym> syms;
+    for (size_t k = 0; k < R.cls.size(); ++k) {
+      pl::Sym s;
+      s.cls = R.cls[k];
+      s.x0 = R.box[k * 4]; s.y0 = R.box[k * 4 + 1];
+      s.x1 = R.box[k * 4 + 2]; s.y1 = R.box[k * 4 + 3];
+      s.base_y = s.y1;
+      syms.push_back(s);
+    }
+    const pl::Result r = pl::parse(syms);
+    // 比べるのは**正規形**（見た目が違っても同じ式なら正解）
+    const bool same = r.ok && ex::equal(ex::expand(r.e), ex::expand(e));
+    if (same) ++ok;
+    else {
+      ++bad;
+      if (show && shown++ < 12)
+        printf("  NG  %-32s -> %s\n", src.c_str(),
+               r.ok ? r.text.c_str() : ("(" + r.why + ")").c_str());
+    }
+  }
+  printf("組版 -> 解析: %d / %d 正解（%.1f%%）、捨てた式 %d\n", ok, ok + bad,
+         (ok + bad) ? 100.0 * ok / (ok + bad) : 0.0, skipped);
+  return 0;
+}
+
+// mathcam fontinfo — フォントの実寸を出す。組版がずれたときに「思っている値か」を確かめる用。
+static int cmd_fontinfo(int argc, char** argv) {
+  const std::string fontp = arg_of(argc, argv, "--font", "");
+  std::string why;
+  ts::Font f;
+  if (!ts::load_font(f, fontp, &why)) { printf("%s\n", why.c_str()); return 1; }
+  printf("upem=%d ascent=%d descent=%d\n", f.upem, f.ascent, f.descent);
+  const std::string dump = arg_of(argc, argv, "--layout", "");
+  if (!dump.empty()) {
+    std::string w2;
+    ex::E e = ex::parse(dump, &w2);
+    const ts::P pp = ts::present(e);
+    const ts::Layout L = ts::lay(f, pp, 1, 1);
+    printf("row: w=%d asc=%d desc=%d  items=%zu\n", L.box.w, L.box.asc, L.box.desc,
+           L.items.size());
+    for (const ts::Item& it : L.items)
+      printf("  cls=%-5s cp=%-5d x=%-6d y=%-6d bbox=(%d,%d,%d,%d) scale=%d/%d\n",
+             it.cls.c_str(), it.cp, it.x, it.y, it.x0, it.y0, it.x1, it.y1, it.scale_num,
+             it.scale_den);
+    return 0;
+  }
+  const char* cs = "72x+";
+  for (const char* c = cs; *c; ++c) {
+    int x0, y0, x1, y1;
+    f.bbox(*c, &x0, &y0, &x1, &y1);
+    printf("%c advance=%d bbox=(%d,%d,%d,%d)\n", *c, f.advance(*c), x0, y0, x1, y1);
+  }
+  return 0;
+}
+
 int main(int argc, char** argv) {
 #ifdef _WIN32
   SetConsoleOutputCP(CP_UTF8);
 #endif
   if (argc < 2) {
-    printf("usage: mathcam <eval|solve|render|dataset> ...\n");
+    printf("usage: mathcam <eval|solve|render|dataset|parse|selftest> ...\n");
     return 1;
   }
   const std::string cmd = argv[1];
@@ -250,6 +367,9 @@ int main(int argc, char** argv) {
   if (cmd == "render") return cmd_render(argc, argv);
   if (cmd == "dataset") return cmd_dataset(argc, argv);
   if (cmd == "genexpr") return cmd_genexpr(argc, argv);
+  if (cmd == "parse") return cmd_parse(argc, argv);
+  if (cmd == "selftest") return cmd_selftest(argc, argv);
+  if (cmd == "fontinfo") return cmd_fontinfo(argc, argv);
   printf("mathcam: '%s' is not implemented yet\n", cmd.c_str());
   return 1;
 }

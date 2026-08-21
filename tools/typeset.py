@@ -127,6 +127,11 @@ def present(e, paren=False):
         b, p = e.kids
         if X.is_num(p) and p.num == X.Rat(1, 2):
             return pn(SQRT, [present(b)])
+        # 負の指数は分数で描く（人は y^-1 ではなく 1/y と書く）。上付きで描くと解析側が
+        # 指数の "-" を二項の引き算と取り違える
+        if X.is_num(p) and p.num.neg():
+            inv = b if (p.num.n == -1 and p.num.d == 1) else X.raw(X.POW, [b, X.num(-p.num)])
+            return pn(FRAC, [present(X.num(1)), present(inv)])
         return pn(SUP, [present(b, b.k in (X.ADD, X.MUL)), present(p)])
     elif e.k == X.FN:
         for c in e.name:
@@ -346,12 +351,11 @@ def layout_boxes(f, e, px):
     minx, maxx = 0, L.w
     miny, maxy = -L.desc, L.asc
     for it in L.items:
-        bx0 = it.x + it.x0 if it.cp else it.x0
-        by0 = it.y + it.y0 if it.cp else it.y0
-        bx1 = it.x + it.x1 if it.cp else it.x1
-        by1 = it.y + it.y1 if it.cp else it.y1
-        minx, maxx = min(minx, bx0), max(maxx, bx1)
-        miny, maxy = min(miny, by0), max(maxy, by1)
+        # bbox は shift() で既に絶対座標。it.x を足すと二重加算になる（C++ 側と同じ間違いを
+        # していて、両言語で同じ枠を出していたのでパリティは通っていた。組版 -> 解析の
+        # 往復テストが捕まえた）
+        minx, maxx = min(minx, it.x0), max(maxx, it.x1)
+        miny, maxy = min(miny, it.y0), max(maxy, it.y1)
     mg = emk(f, K_MARGIN)
     W = max(1, to_px(maxx - minx + 2 * mg, px, f.upem))
     H = max(1, to_px(maxy - miny + 2 * mg, px, f.upem))
@@ -368,10 +372,10 @@ def layout_boxes(f, e, px):
             boxes.append((it.cls, x0, y0, x1, max(y1, y0 + 1)))
             draw.append(("line", x0, y0, x1, max(y1, y0 + 1), 0, 0, 0))
             continue
-        bx0 = to_px(it.x + it.x0 + ox, px, f.upem)
-        bx1 = to_px(it.x + it.x1 + ox, px, f.upem)
-        by0 = to_px(oy - (it.y + it.y1), px, f.upem)
-        by1 = to_px(oy - (it.y + it.y0), px, f.upem)
+        bx0 = to_px(it.x0 + ox, px, f.upem)
+        bx1 = to_px(it.x1 + ox, px, f.upem)
+        by0 = to_px(oy - it.y1, px, f.upem)
+        by1 = to_px(oy - it.y0, px, f.upem)
         boxes.append((it.cls, bx0, by0, max(bx1, bx0 + 1), max(by1, by0 + 1)))
         draw.append(("glyph", to_px(it.x + ox, px, f.upem), to_px(oy - it.y, px, f.upem),
                      it.cp, it.sn, it.sd, 0, 0))
