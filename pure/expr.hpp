@@ -746,8 +746,27 @@ struct Parser {
   std::string s;
   size_t i = 0;
   std::string err;
+  // **畳まないで読む**（小学校の計算の手順を出すため。arith.hpp を参照）。
+  // raw のときは + - × ÷ ^ を Fn の "op_*" として残すので、正規化に巻き込まれない。
+  bool raw = false;
 
   explicit Parser(std::string src) : s(std::move(src)) {}
+
+  // 演算 1 つを作る。**raw と通常で道を分けない**（分けると片方だけ直す事故が起きる）
+  E bin(const char* op, const E& a, const E& b) const {
+    if (raw) return ex::raw(Kind::Fn, {a, b}, op);
+    const std::string o = op;
+    if (o == "op_add") return add_n({a, b});
+    if (o == "op_sub") return add_n({a, mul_n({num(Rat(-1)), b})});
+    if (o == "op_mul") return mul_n({a, b});
+    if (o == "op_div") return mul_n({a, pow_e(b, num(Rat(-1)))});
+    if (o == "op_pow") return pow_e(a, b);
+    return a;
+  }
+  E un(const char* op, const E& a) const {
+    if (raw) return ex::raw(Kind::Fn, {a}, op);
+    return mul_n({num(Rat(-1)), a});                 // op_neg
+  }
 
   void ws() { while (i < s.size() && (s[i] == ' ' || s[i] == '\t')) ++i; }
   bool eat(char c) { ws(); if (i < s.size() && s[i] == c) { ++i; return true; } return false; }
@@ -767,7 +786,7 @@ struct Parser {
     ws();
     if (i < s.size() && err.empty()) err = "余分な文字: " + s.substr(i);
     if (rels.size() == 1) return rels[0];
-    return raw(Kind::Sys, rels);
+    return ex::raw(Kind::Sys, rels);
   }
   // 関係演算子は 1 段だけ（a < b < c のような連鎖は受けない。中学の書き方に無いので、
   // 受けると「読めているつもりで別の意味」になる）
@@ -777,19 +796,19 @@ struct Parser {
     if (i + 1 < s.size() && (s[i] == '<' || s[i] == '>') && s[i + 1] == '=') {
       const std::string op = std::string(1, s[i]) + "=";
       i += 2;
-      return raw(Kind::Rel, {l, parse_add()}, op);
+      return ex::raw(Kind::Rel, {l, parse_add()}, op);
     }
-    if (eat('<')) return raw(Kind::Rel, {l, parse_add()}, "<");
-    if (eat('>')) return raw(Kind::Rel, {l, parse_add()}, ">");
-    if (eat('=')) return raw(Kind::Rel, {l, parse_add()}, "=");
+    if (eat('<')) return ex::raw(Kind::Rel, {l, parse_add()}, "<");
+    if (eat('>')) return ex::raw(Kind::Rel, {l, parse_add()}, ">");
+    if (eat('=')) return ex::raw(Kind::Rel, {l, parse_add()}, "=");
     return l;
   }
   E parse_add() {
     E l = parse_mul();
     for (;;) {
       ws();
-      if (eat('+')) l = add_n({l, parse_mul()});
-      else if (eat('-')) l = add_n({l, mul_n({num(Rat(-1)), parse_mul()})});
+      if (eat('+')) l = bin("op_add", l, parse_mul());
+      else if (eat('-')) l = bin("op_sub", l, parse_mul());
       else return l;
     }
   }
@@ -805,27 +824,27 @@ struct Parser {
     E l = parse_unary();
     for (;;) {
       ws();
-      if (eat('*') || eat_utf8("\xc3\x97")) l = mul_n({l, parse_unary()});           // * ×
+      if (eat('*') || eat_utf8("\xc3\x97")) l = bin("op_mul", l, parse_unary());     // * ×
       else if (eat('/') || eat_utf8("\xc3\xb7"))                                     // / ÷
-        l = mul_n({l, pow_e(parse_unary(), num(Rat(-1)))});
+        l = bin("op_div", l, parse_unary());
       else if (i < s.size() && (isalpha((unsigned char)s[i]) || s[i] == '(' || s[i] == '{' ||
                                 isdigit((unsigned char)s[i]))) {
         // 暗黙の掛け算。ただし数のあとに数が来る形（"2 3"）は書き間違いとして扱う
         if (isdigit((unsigned char)s[i]) && is_num(l)) { err = "数が続いています"; return l; }
-        l = mul_n({l, parse_unary()});
+        l = bin("op_mul", l, parse_unary());
       } else return l;
     }
   }
   E parse_unary() {
     ws();
-    if (eat('-')) return mul_n({num(Rat(-1)), parse_unary()});
+    if (eat('-')) return un("op_neg", parse_unary());
     if (eat('+')) return parse_unary();
     return parse_pow();
   }
   E parse_pow() {
     E b = parse_atom();
     ws();
-    if (eat('^')) return pow_e(b, parse_unary());     // 右結合
+    if (eat('^')) return bin("op_pow", b, parse_unary());   // 右結合
     return b;
   }
   E parse_atom() {
@@ -864,6 +883,16 @@ struct Parser {
         std::vector<E> args{parse_add()};
         while (eat(',')) args.push_back(parse_add());
         if (!eat(')')) err = "関数の閉じ括弧がありません";
+        // raw のとき:
+        //   frac(a,b) は**1 つの数**として畳む（縦の分数は「割り算をする所」ではない）
+        //   mixed(w,a,b) は op_mixed のまま残す（「帯分数を仮分数に直す」を手順に出す）
+        if (raw && name == "frac" && args.size() == 2) {
+          if (is_num(args[0]) && is_num(args[1]) && !args[1]->num.is_zero())
+            return num(args[0]->num / args[1]->num);
+          return bin("op_div", args[0], args[1]);
+        }
+        if (raw && name == "mixed" && args.size() == 3)
+          return ex::raw(Kind::Fn, {args[0], args[1], args[2]}, "op_mixed");
         return fn_e(name, args);
       }
       // **英字が続いたら 1 文字ずつの変数の積**（`12xy` は 12*x*y。教科書はそう書く）。
@@ -887,6 +916,16 @@ inline E parse(const std::string& src, std::string* why = nullptr) {
   E e = p.parse_all();
   if (why) *why = p.err;
   return simp(e);
+}
+
+// **畳まないで読む**（小学校の計算の手順を出すため。ar::eval_steps に渡す）。
+// simp を通さないので、書かれた順・書かれた括弧がそのまま木に残る。
+inline E parse_raw(const std::string& src, std::string* why = nullptr) {
+  Parser p(src);
+  p.raw = true;
+  E e = p.parse_all();
+  if (why) *why = p.err;
+  return e;
 }
 
 // ---------------------------------------------------------------- 補助

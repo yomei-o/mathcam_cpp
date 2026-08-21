@@ -16,6 +16,7 @@
 #include "stb_image_write.h"
 #include "expr.hpp"
 #include "solve.hpp"
+#include "arith.hpp"
 #include "typeset_impl.hpp"
 #include "gen_expr.hpp"
 #include "parse_layout.hpp"
@@ -120,7 +121,26 @@ static int cmd_solve(int argc, char** argv) {
 
   const slv::Solution s = slv::solve(e, var);
   auto show = [&](const ex::E& x) { return latex ? ex::to_latex(x) : ex::to_infix(x); };
-  if (!s.ok) { printf("solve: %s\n", s.why.c_str()); return 1; }
+  if (!s.ok) {
+    // 方程式でないなら「計算問題」として、小学校の順序で 1 手ずつ計算する。
+    // **畳まない木**で読み直すのが要点（ex::parse は 1.8 × 3.5 を先に畳んでしまう）
+    std::string why2;
+    const ex::E rawe = ex::parse_raw(src, &why2);
+    // 小数で書くのは、元の式が小数で書かれていたときだけ（分数の問題で 5/8 を 0.625 と
+    // 書いたら小学校の答えとしては嘘になる）
+    const bool dec_ok = src.find('.') != std::string::npos;
+    const ar::Result ares = why2.empty() ? ar::eval_steps(rawe, dec_ok) : ar::Result();
+    if (ares.ok) {
+      if (steps)
+        for (size_t i = 0; i < ares.steps.size(); ++i)
+          printf("%zu. [%s] %s\n   %s\n", i + 1, ares.steps[i].rule.c_str(),
+                 ares.steps[i].note.c_str(), ares.steps[i].after.c_str());
+      printf("%s\n", ar::to_text(ares.value, dec_ok).c_str());
+      return 0;
+    }
+    printf("solve: %s\n", s.why.c_str());
+    return 1;
+  }
   if (steps) {
     for (size_t i = 0; i < s.steps.size(); ++i) {
       const slv::Step& st = s.steps[i];
@@ -329,6 +349,20 @@ static int cmd_parse(int argc, char** argv) {
   const pl::Result r = pl::parse(syms);
   if (!r.ok) { printf("parse failed: %s\n", r.why.c_str()); return 1; }
   printf("%s\n", r.text.c_str());
+  // --steps を付けると、計算問題として 1 手ずつ計算する（検出器なしで手順を試せる）
+  if (has_flag(argc, argv, "--steps")) {
+    bool dec_ok = false;
+    for (const pl::Sym& s : syms)
+      if (s.cls == "dot") dec_ok = true;
+    const pl::Result rr = pl::parse_raw(syms);
+    if (rr.ok) {
+      const ar::Result ares = ar::eval_steps(rr.e, dec_ok);
+      for (size_t i = 0; i < ares.steps.size(); ++i)
+        printf("%zu. [%s] %s\n   %s\n", i + 1, ares.steps[i].rule.c_str(),
+               ares.steps[i].note.c_str(), ares.steps[i].after.c_str());
+      if (ares.ok) printf("答え: %s\n", ar::to_text(ares.value, dec_ok).c_str());
+    }
+  }
   return 0;
 }
 
@@ -589,13 +623,33 @@ static int cmd_photo(int argc, char** argv) {
   }
   // 1 式ずつ解いて出す。--lines を付けると囲んだ範囲の**行を全部**読む
   // （教科書のページは 1 問ずつ切るのが面倒なので）
-  auto show_one = [&](const pl::Result& r, const char* prefix) {
+  // 計算問題（方程式でない）のときは、小学校の順序で 1 手ずつ計算して見せる。
+  // **畳まない木で読み直す**のが要点（畳んだ木からは「どこを先に計算したか」が消える）。
+  // 小数で書くかどうかは、小数点の字が検出されたかで決める。
+  auto arith_of = [&](const std::vector<pl::Sym>& sy, bool& dec_ok) {
+    dec_ok = false;
+    for (const pl::Sym& s : sy)
+      if (s.cls == "dot") dec_ok = true;
+    const pl::Result rr = pl::parse_raw(sy);
+    if (!rr.ok) return ar::Result();
+    return ar::eval_steps(rr.e, dec_ok);
+  };
+  auto show_one = [&](const pl::Result& r, const char* prefix,
+                      const std::vector<pl::Sym>* sy) {
     if (!r.ok) { printf("%sレイアウト解析に失敗: %s\n", prefix, r.why.c_str()); return; }
     printf("%s読めた式: %s\n", prefix, r.text.c_str());
     const slv::Solution sol = slv::solve(r.e);
     if (!sol.ok) {
-      // 方程式でなければ、値を計算して出す（計算問題として扱う）
-      printf("%s答え: %s\n", prefix, ex::to_infix(ex::expand(r.e)).c_str());
+      // 方程式でなければ、計算問題として 1 手ずつ計算する
+      bool dec_ok = false;
+      const ar::Result ares = sy ? arith_of(*sy, dec_ok) : ar::Result();
+      if (ares.ok && steps)
+        for (size_t i = 0; i < ares.steps.size(); ++i)
+          printf("%s%zu. [%s] %s\n%s   %s\n", prefix, i + 1, ares.steps[i].rule.c_str(),
+                 ares.steps[i].note.c_str(), prefix, ares.steps[i].after.c_str());
+      printf("%s答え: %s\n", prefix,
+             ares.ok ? ar::to_text(ares.value, dec_ok).c_str()
+                     : ex::to_infix(ex::expand(r.e)).c_str());
       return;
     }
     if (steps)
@@ -626,7 +680,7 @@ static int cmd_photo(int argc, char** argv) {
         for (const pl::Sym& sm : sorted2)
           printf("  %-5s (%d,%d)-(%d,%d)\n", sm.cls.c_str(), sm.x0, sm.y0, sm.x1, sm.y1);
       }
-      show_one(pl::parse(ls[i]), "");
+      show_one(pl::parse(ls[i]), "", &ls[i]);
     }
     return 0;
   }
@@ -635,13 +689,42 @@ static int cmd_photo(int argc, char** argv) {
     printf("%zu 行\n", rs.size());
     for (size_t i = 0; i < rs.size(); ++i) {
       printf("--- %zu 行目 ---\n", i + 1);
-      show_one(rs[i], "");
+      show_one(rs[i], "", nullptr);
     }
     return 0;
   }
   const pl::Result r = pl::parse(syms);
   if (!r.ok) { printf("レイアウト解析に失敗: %s\n", r.why.c_str()); return 1; }
-  show_one(r, "");
+  show_one(r, "", &syms);
+  return 0;
+}
+
+
+// mathcam rawdump — 畳まない木を見る（小学校の手順が出ないときの原因調べ）
+static void dump_raw(const ex::E& e, int depth) {
+  std::string pad(depth * 2, ' ');
+  const char* kind = e->k == ex::Kind::Num ? "Num"
+                     : e->k == ex::Kind::Sym ? "Sym"
+                     : e->k == ex::Kind::Add ? "Add"
+                     : e->k == ex::Kind::Mul ? "Mul"
+                     : e->k == ex::Kind::Pow ? "Pow"
+                     : e->k == ex::Kind::Fn  ? "Fn"
+                     : e->k == ex::Kind::Rel ? "Rel" : "Sys";
+  printf("%s%s %s %s\n", pad.c_str(), kind, e->name.c_str(),
+         e->k == ex::Kind::Num ? e->num.str().c_str() : "");
+  for (const ex::E& c : e->kids) dump_raw(c, depth + 1);
+}
+
+static int cmd_rawdump(int argc, char** argv) {
+  const std::string src = arg_of(argc, argv, "--expr", "");
+  std::string why;
+  const ex::E e = ex::parse_raw(src, &why);
+  if (!why.empty()) { printf("parse error: %s\n", why.c_str()); return 1; }
+  dump_raw(e, 0);
+  printf("text: %s\n", ar::to_text(e).c_str());
+  const ar::Result r = ar::eval_steps(e);
+  printf("ok=%d steps=%zu value=%s\n", (int)r.ok, r.steps.size(),
+         r.value ? ar::to_text(r.value).c_str() : "(none)");
   return 0;
 }
 
@@ -678,6 +761,7 @@ int main(int argc, char** argv) {
   }
   const std::string cmd = argv[1];
   if (cmd == "eval") return cmd_eval(argc, argv);
+  if (cmd == "rawdump") return cmd_rawdump(argc, argv);
   if (cmd == "solve") return cmd_solve(argc, argv);
   if (cmd == "render") return cmd_render(argc, argv);
   if (cmd == "dataset") return cmd_dataset(argc, argv);

@@ -23,6 +23,7 @@ sys.path.insert(0, os.path.join(ROOT, "tools"))
 import expr as X              # noqa: E402
 import solve as S             # noqa: E402
 import parse_layout as PL     # noqa: E402
+import arith as AR            # noqa: E402
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -181,6 +182,17 @@ def main():
 
     sol = S.solve(e)
     if not sol.ok:
+        # 方程式でなければ計算問題として、小学校の順序で 1 手ずつ計算する
+        dec_ok = any(s.cls == "dot" for s in syms)
+        ok2, raw_e, _t, _w = PL.parse(syms, raw=True)
+        ares = AR.eval_steps(raw_e, dec_ok) if ok2 else None
+        if ares is not None and ares.ok:
+            if a.steps:
+                for i, st in enumerate(ares.steps, 1):
+                    print("%d. [%s] %s" % (i, st.rule, st.note))
+                    print("   %s" % st.after)
+            print("答え: %s" % AR.to_text(ares.value, dec_ok))
+            return 0
         v = X.expand(e)
         print("答え: %s" % X.to_infix(v))
         if X.is_num(v) and not v.num.is_int():

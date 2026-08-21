@@ -696,12 +696,37 @@ def is_fn_name(n):
 
 class Parser:
     """C++ 側の Parser と同じ文法。暗黙の掛け算（5x, 2(x+1)）を受けるのは、
-    写真から読んだ式がそう書かれているから。"""
+    写真から読んだ式がそう書かれているから。
+
+    **raw のときは畳まない**（小学校の手順を出すため。tools/arith.py 参照）。
+    """
 
     def __init__(self, src):
         self.s = src
         self.i = 0
         self.err = ""
+        self.raw = False
+
+    def bin(self, op, a, b):
+        """演算 1 つを作る。**raw と通常で道を分けない**（分けると片方だけ直す事故が起きる）。"""
+        if self.raw:
+            return raw(FN, [a, b], op)
+        if op == "op_add":
+            return add_n([a, b])
+        if op == "op_sub":
+            return add_n([a, mul_n([num(-1), b])])
+        if op == "op_mul":
+            return mul_n([a, b])
+        if op == "op_div":
+            return mul_n([a, pow_e(b, num(-1))])
+        if op == "op_pow":
+            return pow_e(a, b)
+        return a
+
+    def un(self, op, a):
+        if self.raw:
+            return raw(FN, [a], op)
+        return mul_n([num(-1), a])                    # op_neg
 
     def ws(self):
         while self.i < len(self.s) and self.s[self.i] in " \t":
@@ -753,9 +778,9 @@ class Parser:
         while True:
             self.ws()
             if self.eat("+"):
-                l = add_n([l, self.parse_mul()])
+                l = self.bin("op_add", l, self.parse_mul())
             elif self.eat("-"):
-                l = add_n([l, mul_n([num(-1), self.parse_mul()])])
+                l = self.bin("op_sub", l, self.parse_mul())
             else:
                 return l
 
@@ -772,23 +797,23 @@ class Parser:
         while True:
             self.ws()
             if self.eat("*") or self.eat_str("×"):          # * ×
-                l = mul_n([l, self.parse_unary()])
+                l = self.bin("op_mul", l, self.parse_unary())
             elif self.eat("/") or self.eat_str("÷"):        # / ÷
-                l = mul_n([l, pow_e(self.parse_unary(), num(-1))])
+                l = self.bin("op_div", l, self.parse_unary())
             elif self.i < len(self.s) and (self.s[self.i].isalpha() or self.s[self.i] == "("
                                           or self.s[self.i] == "{"
                                           or self.s[self.i].isdigit()):
                 if self.s[self.i].isdigit() and is_num(l):
                     self.err = "数が続いています"
                     return l
-                l = mul_n([l, self.parse_unary()])
+                l = self.bin("op_mul", l, self.parse_unary())
             else:
                 return l
 
     def parse_unary(self):
         self.ws()
         if self.eat("-"):
-            return mul_n([num(-1), self.parse_unary()])
+            return self.un("op_neg", self.parse_unary())
         if self.eat("+"):
             return self.parse_unary()
         return self.parse_pow()
@@ -797,7 +822,7 @@ class Parser:
         b = self.parse_atom()
         self.ws()
         if self.eat("^"):
-            return pow_e(b, self.parse_unary())        # 右結合
+            return self.bin("op_pow", b, self.parse_unary())        # 右結合
         return b
 
     def parse_atom(self):
@@ -844,6 +869,14 @@ class Parser:
                     args.append(self.parse_add())
                 if not self.eat(")"):
                     self.err = "関数の閉じ括弧がありません"
+                # raw のとき: frac(a,b) は 1 つの数として畳む（縦の分数は「割り算をする所」
+                # ではない）。mixed(w,a,b) は op_mixed のまま残す（手順に出したい）
+                if self.raw and name == "frac" and len(args) == 2:
+                    if is_num(args[0]) and is_num(args[1]) and not args[1].num.is_zero():
+                        return num(args[0].num / args[1].num)
+                    return self.bin("op_div", args[0], args[1])
+                if self.raw and name == "mixed" and len(args) == 3:
+                    return raw(FN, list(args), "op_mixed")
                 return fn_e(name, args)
             # **英字が続いたら 1 文字ずつの変数の積**（`12xy` は 12*x*y。教科書はそう書く）
             if len(name) > 1:
@@ -852,6 +885,14 @@ class Parser:
         self.err = "読めない文字: " + self.s[self.i]
         self.i += 1
         return num(0)
+
+
+def parse_raw(src):
+    """**畳まないで読む**（小学校の計算の手順を出すため。arith.eval_steps に渡す）。"""
+    p = Parser(src)
+    p.raw = True
+    e = p.parse_all()
+    return e, p.err
 
 
 def parse(src):

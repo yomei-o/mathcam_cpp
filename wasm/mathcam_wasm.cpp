@@ -15,6 +15,7 @@
 //     ブラウザと CLI で言い方が違うアプリになる。
 #include "pipeline.hpp"
 #include "solve.hpp"
+#include "arith.hpp"
 #include <emscripten/emscripten.h>
 #include <string>
 #include <vector>
@@ -39,8 +40,9 @@ static std::string arr(const std::vector<std::string>& v) {
   return s + "]";
 }
 
-// 1 行ぶんの結果（式・手順・答え）を JSON の中身にする（{ } は付けない）
-static std::string one_json(const pl::Result& r) {
+// 1 行ぶんの結果（式・手順・答え）を JSON の中身にする（{ } は付けない）。
+// syms を渡すと、計算問題のときに**小学校の順序の手順**も返す（畳まない木で読み直す）。
+static std::string one_json(const pl::Result& r, const std::vector<pl::Sym>* syms = nullptr) {
   if (!r.ok) return "\"error\":\"" + esc(r.why) + "\"";
   std::string js = "\"expr\":\"" + esc(r.text) + "\",\"latex\":\"" + esc(ex::to_latex(r.e)) + "\"";
   const slv::Solution sol = slv::solve(r.e);
@@ -53,6 +55,26 @@ static std::string one_json(const pl::Result& r) {
     if (ex::is_num(v) && !v->num.is_int()) {
       const std::string dec = ex::to_decimal(v->num);
       if (!dec.empty()) js += ",\"decimal\":\"" + esc(dec) + "\"";
+    }
+    // 1 手ずつの計算（かっこの中 -> かけ算・わり算 -> たし算・ひき算）
+    if (syms) {
+      bool dec_ok = false;
+      for (const pl::Sym& s : *syms)
+        if (s.cls == "dot") dec_ok = true;
+      const pl::Result rr = pl::parse_raw(*syms);
+      if (rr.ok) {
+        const ar::Result ares = ar::eval_steps(rr.e, dec_ok);
+        if (ares.ok) {
+          js += ",\"steps\":[";
+          for (size_t i = 0; i < ares.steps.size(); ++i) {
+            js += (i ? ",{" : "{");
+            js += "\"rule\":\"" + esc(ares.steps[i].rule) + "\",\"note\":\"" +
+                  esc(ares.steps[i].note) + "\",\"after\":\"" + esc(ares.steps[i].after) +
+                  "\",\"after_latex\":\"" + esc(ares.steps[i].after) + "\"}";
+          }
+          js += "]";
+        }
+      }
     }
     return js;
   }
@@ -106,10 +128,11 @@ EMSCRIPTEN_KEEPALIVE int mc_run(const unsigned char* rgba, int w, int h, int img
 
   // 全体を 1 式として読んだ結果（今までと同じ形）。ページの一部を囲んだときは
   // **行ごとの結果**も返す（教科書は 1 問ずつ切るのが面倒なので）
-  js += "," + one_json(pl::parse(det.syms));
-  const std::vector<pl::Result> lines = pl::parse_lines(det.syms);
+  js += "," + one_json(pl::parse(det.syms), &det.syms);
+  const std::vector<std::vector<pl::Sym>> line_syms = pl::split_lines(det.syms);
   js += ",\"lines\":[";
-  for (size_t i = 0; i < lines.size(); ++i) js += (i ? ",{" : "{") + one_json(lines[i]) + "}";
+  for (size_t i = 0; i < line_syms.size(); ++i)
+    js += (i ? ",{" : "{") + one_json(pl::parse(line_syms[i]), &line_syms[i]) + "}";
   js += "]}";
   g_result = js;
   return (int)det.syms.size();

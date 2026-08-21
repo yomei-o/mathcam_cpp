@@ -73,6 +73,31 @@ inline int median_h(const std::vector<Sym>& v) {
   return std::max(1, hs[hs.size() / 2]);
 }
 
+// **畳まないで読むか**。小学校の計算の手順（ar::eval_steps）を出すのに要る。
+// 畳んで読むと `1.8 × 3.5 - (10.2 - 6.8)` は `2.9` になり、どこを先に計算したか消える。
+inline bool& raw_mode() {
+  static bool v = false;
+  return v;
+}
+inline ex::E mk_add(const ex::E& a, const ex::E& b) {
+  return raw_mode() ? ex::raw(ex::Kind::Fn, {a, b}, "op_add") : ex::add(a, b);
+}
+inline ex::E mk_sub(const ex::E& a, const ex::E& b) {
+  return raw_mode() ? ex::raw(ex::Kind::Fn, {a, b}, "op_sub") : ex::sub(a, b);
+}
+inline ex::E mk_mul(const ex::E& a, const ex::E& b) {
+  return raw_mode() ? ex::raw(ex::Kind::Fn, {a, b}, "op_mul") : ex::mul(a, b);
+}
+inline ex::E mk_div(const ex::E& a, const ex::E& b) {
+  // 縦の分数は**1 つの数**として畳む（割り算をする所ではない）。÷ の記号だけ演算に残す
+  if (raw_mode() && ex::is_num(a) && ex::is_num(b) && !b->num.is_zero())
+    return ex::num(a->num / b->num);
+  return raw_mode() ? ex::raw(ex::Kind::Fn, {a, b}, "op_div") : ex::div(a, b);
+}
+inline ex::E mk_neg(const ex::E& a) {
+  return raw_mode() ? ex::raw(ex::Kind::Fn, {a}, "op_neg") : ex::neg(a);
+}
+
 ex::E parse_flat(std::vector<Sym> v, std::string* why);
 
 inline Sym make_atom(const ex::E& e, int x0, int y0, int x1, int y1, int base_y) {
@@ -171,7 +196,7 @@ inline bool collapse_one(std::vector<Sym>& v, std::string* why) {
     if (!why->empty()) return false;
     const E de = parse_flat(down, why);
     if (!why->empty()) return false;
-    Sym fr = make_atom(div(nu, de), ux0, uy0, ux1, uy1, bar.cy());
+    Sym fr = make_atom(mk_div(nu, de), ux0, uy0, ux1, uy1, bar.cy());
     fr.from_frac = true;                            // 帯分数の判定に使う
     rest.push_back(fr);
     // 原子を末尾に足したので**必ず並べ直す**。これを忘れると、以降の = や ± の分割が
@@ -381,13 +406,13 @@ inline ex::E parse_flat(std::vector<Sym> v, std::string* why) {
     if (!why->empty()) return num(Rat(0));
     const E b = parse_flat(r, why);
     if (!why->empty()) return num(Rat(0));
-    return c == "+" ? add(a, b) : sub(a, b);
+    return c == "+" ? mk_add(a, b) : mk_sub(a, b);
   }
   if (!v[0].atom && (v[0].cls == "+" || v[0].cls == "-") && v.size() > 1) {
     std::vector<Sym> r(v.begin() + 1, v.end());
     const E a = parse_flat(r, why);
     if (!why->empty()) return num(Rat(0));
-    return v[0].cls == "-" ? neg(a) : a;
+    return v[0].cls == "-" ? mk_neg(a) : a;
   }
 
   // 5) × と ÷ で割る（右から。左結合にするため）。± より内側で、並置より外側
@@ -401,7 +426,9 @@ inline ex::E parse_flat(std::vector<Sym> v, std::string* why) {
     if (!why->empty()) return num(Rat(0));
     const E b = parse_flat(r, why);
     if (!why->empty()) return num(Rat(0));
-    return c == "times" ? mul(a, b) : div(a, b);
+    // ÷ は「割り算をする所」なので raw では演算に残す（縦の分数と扱いが違う）
+    if (c == "div" && raw_mode()) return ex::raw(ex::Kind::Fn, {a, b}, "op_div");
+    return c == "times" ? mk_mul(a, b) : ex::div(a, b);
   }
 
   // 6) 並置（掛け算）と上付き。**数のすぐ右の分数は帯分数**（2 5/8 = 2 + 5/8）
@@ -428,14 +455,29 @@ inline ex::E parse_flat(std::vector<Sym> v, std::string* why) {
   if (factors.empty()) { *why = "式になりません"; return num(Rat(0)); }
   E r = factors[0];
   for (size_t i = 1; i < factors.size(); ++i)
-    r = add_it[i] ? add(r, factors[i]) : mul(r, factors[i]);
+    r = add_it[i] ? mk_add(r, factors[i]) : mk_mul(r, factors[i]);
   return r;
 }
 
 inline Result parse(const std::vector<Sym>& in) {
   Result r;
   std::string why;
+  raw_mode() = false;
   r.e = parse_flat(in, &why);
+  if (!why.empty()) { r.why = why; return r; }
+  r.ok = true;
+  r.text = ex::to_infix(r.e);
+  return r;
+}
+
+// 畳まないで読む（小学校の計算の手順を出すため）。**同じ枠の列**から作るので、
+// 通常の parse と食い違うことはない
+inline Result parse_raw(const std::vector<Sym>& in) {
+  Result r;
+  std::string why;
+  raw_mode() = true;
+  r.e = parse_flat(in, &why);
+  raw_mode() = false;
   if (!why.empty()) { r.why = why; return r; }
   r.ok = true;
   r.text = ex::to_infix(r.e);

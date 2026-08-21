@@ -54,9 +54,47 @@ class Sym:
     def h(self):
         return self.y1 - self.y0
 
+    def copy(self):
+        """**解析は入力を書き換えない**（C++ は値渡しなので自然にそうなっている）。
+
+        merge_digits が cls を書き換えるので、同じ枠の列を 2 回解析すると
+        `0.5` が `0.5.5` になった（畳む版と畳まない版の 2 回通したときに踏んだ）。
+        """
+        s = Sym(self.cls, self.x0, self.y0, self.x1, self.y1, self.base_y, self.atom, self.e)
+        s.from_frac = self.from_frac
+        return s
+
 
 class Fail(Exception):
     """解析できない（C++ の why に相当）。"""
+
+
+# **畳まないで読むか**（小学校の手順を出すため。C++ の pl::raw_mode と同じ役目）。
+# 畳んで読むと `1.8 × 3.5 - (10.2 - 6.8)` は `2.9` になり、どこを先に計算したかが消える。
+_RAW = [False]
+
+
+def mk_add(a, b):
+    return X.raw(X.FN, [a, b], "op_add") if _RAW[0] else X.add(a, b)
+
+
+def mk_sub(a, b):
+    return X.raw(X.FN, [a, b], "op_sub") if _RAW[0] else X.sub(a, b)
+
+
+def mk_mul(a, b):
+    return X.raw(X.FN, [a, b], "op_mul") if _RAW[0] else X.mul(a, b)
+
+
+def mk_div(a, b):
+    # 縦の分数は 1 つの数として畳む（割り算をする所ではない）。÷ の記号だけ演算に残す
+    if _RAW[0] and X.is_num(a) and X.is_num(b) and not b.num.is_zero():
+        return X.num(a.num / b.num)
+    return X.raw(X.FN, [a, b], "op_div") if _RAW[0] else X.div(a, b)
+
+
+def mk_neg(a):
+    return X.raw(X.FN, [a], "op_neg") if _RAW[0] else X.neg(a)
 
 
 def median_h(v):
@@ -159,7 +197,7 @@ def collapse_one(v):
             raise Fail("分数の上か下が空です")
         nu = parse_flat(up)
         de = parse_flat(down)
-        fr = make_atom(X.div(nu, de), ux0, uy0, ux1, uy1, bar.cy())
+        fr = make_atom(mk_div(nu, de), ux0, uy0, ux1, uy1, bar.cy())
         fr.from_frac = True                          # 帯分数の判定に使う
         rest.append(fr)
         # 原子を末尾に足したので**必ず並べ直す**（忘れると = や ± の分割が位置と無関係になる）
@@ -304,7 +342,7 @@ def is_sup(base, s, h_ref):
 
 
 def parse_flat(v_in):
-    v = sorted(v_in, key=lambda s: s.x0)
+    v = sorted((s.copy() for s in v_in), key=lambda s: s.x0)
     if not v:
         raise Fail("記号がありません")
 
@@ -337,10 +375,10 @@ def parse_flat(v_in):
         if not l or not r:
             raise Fail("演算子の両側が空です")
         a, b = parse_flat(l), parse_flat(r)
-        return X.add(a, b) if s.cls == "+" else X.sub(a, b)
+        return mk_add(a, b) if s.cls == "+" else mk_sub(a, b)
     if not v[0].atom and v[0].cls in ("+", "-") and len(v) > 1:
         a = parse_flat(v[1:])
-        return X.neg(a) if v[0].cls == "-" else a
+        return mk_neg(a) if v[0].cls == "-" else a
 
     # 5) × と ÷ で割る（右から。左結合にするため）。± より内側で、並置より外側
     for i in range(len(v) - 1, 0, -1):
@@ -351,7 +389,10 @@ def parse_flat(v_in):
         if not l or not r:
             raise Fail("演算子の両側が空です")
         a, b = parse_flat(l), parse_flat(r)
-        return X.mul(a, b) if s.cls == "times" else X.div(a, b)
+        # ÷ は「割り算をする所」なので raw では演算に残す（縦の分数と扱いが違う）
+        if s.cls == "div" and _RAW[0]:
+            return X.raw(X.FN, [a, b], "op_div")
+        return mk_mul(a, b) if s.cls == "times" else X.div(a, b)
 
     # 6) 並置（掛け算）と上付き。**数のすぐ右の分数は帯分数**（2 5/8 = 2 + 5/8）
     h_ref = median_h(v)
@@ -376,16 +417,22 @@ def parse_flat(v_in):
         raise Fail("式になりません")
     r = factors[0]
     for j in range(1, len(factors)):
-        r = X.add(r, factors[j]) if add_it[j] else X.mul(r, factors[j])
+        r = mk_add(r, factors[j]) if add_it[j] else mk_mul(r, factors[j])
     return r
 
 
-def parse(syms):
-    """(ok, e, text, why) を返す（C++ の pl::Result に相当）。"""
+def parse(syms, raw=False):
+    """(ok, e, text, why) を返す（C++ の pl::Result に相当）。
+
+    raw=True で畳まないで読む（小学校の手順を出すため。C++ の pl::parse_raw と同じ）。
+    """
+    _RAW[0] = raw
     try:
         e = parse_flat(syms)
     except Fail as ex:
+        _RAW[0] = False
         return False, None, "", str(ex)
+    _RAW[0] = False
     return True, e, X.to_infix(e), ""
 
 
