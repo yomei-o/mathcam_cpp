@@ -252,12 +252,21 @@ struct Cell {
 // 1 式ぶんを囲んだとき**（280x90 なら 640 に 2 倍以上に拡大される。実測 12/12）。
 // そこで行（横の射影）と塊（縦の射影）の両方を**モデルを使わずに**切り出し、塊ごとに
 // 元画像から読む。検出は塊の数だけ走る（ページ 1 枚で 20 回ほど）。
+// 塊 1 つを読み終えるたびに呼ばれる（ブラウザで進捗を出すため。ページ 1 枚で 30 秒級なので、
+// 何も出ないと壊れて見える）。CLI は渡さない。
+using CellProgress = void (*)(int done, int total, void* user);
+
 inline std::vector<Cell> detect_by_cells(const onx::Graph& g, const unsigned char* rgb, int w,
                                         int h, int imgsz, float conf, float nms, BoxFmt fmt,
                                         int gap_pct = 35,    // 隙間の下限（残りは分布で決める）
-                                        int merge_pct = 25) {
+                                        int merge_pct = 25,
+                                        CellProgress on_cell = nullptr, void* user = nullptr) {
   std::vector<Cell> out;
   const std::vector<std::pair<int, int>> bands = ink_bands(rgb, w, h, 4, 12, merge_pct);
+  // 先に塊の総数を数える（進捗の分母。射影だけなので安い）
+  int total = 0, done = 0;
+  for (const std::pair<int, int>& b0 : bands)
+    total += (int)ink_cols(rgb, w, h, b0.first, b0.second, gap_pct / 100.0).size();
   for (const std::pair<int, int>& b : bands) {
     const int bh = b.second - b.first;
     if (bh <= 0) continue;
@@ -274,6 +283,7 @@ inline std::vector<Cell> detect_by_cells(const onx::Graph& g, const unsigned cha
         std::memcpy(&cell[(size_t)y * cw * 3], rgb + ((size_t)(y + cy0) * w + cx0) * 3,
                     (size_t)cw * 3);
       Detected d = detect_syms(g, cell.data(), cw, chh, imgsz, conf, nms, fmt);
+      if (on_cell) on_cell(++done, total, user);
       if (d.syms.empty()) continue;
       Cell res;
       res.x0 = cx0; res.y0 = cy0; res.x1 = cx1; res.y1 = cy1;

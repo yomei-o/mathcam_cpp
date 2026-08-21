@@ -165,9 +165,19 @@ EMSCRIPTEN_KEEPALIVE int mc_run_lines(const unsigned char* rgba, int w, int h, i
     rgb[i * 3 + 1] = rgba[i * 4 + 1];
     rgb[i * 3 + 2] = rgba[i * 4 + 2];
   }
-  const std::vector<pipeln::Cell> cells =
-      pipeln::detect_by_cells(g_graph, rgb.data(), w, h, imgsz > 0 ? imgsz : 640,
-                              conf > 0.f ? conf : 0.25f, 0.45f, BoxFmt::CXCYWH);
+  // 塊を 1 つ読むたびに進捗を返す（ページ 1 枚で 30 秒級。何も出ないと壊れて見える）
+  const std::vector<pipeln::Cell> cells = pipeln::detect_by_cells(
+      g_graph, rgb.data(), w, h, imgsz > 0 ? imgsz : 640, conf > 0.f ? conf : 0.25f, 0.45f,
+      BoxFmt::CXCYWH, 35, 25,
+      [](int done, int total, void*) {
+        // **postMessage が無い所でも動くようにする**（node での検査は Worker ではない。
+        // 素で呼ぶと ReferenceError で mc_run_lines が落ちた）
+        EM_ASM({
+          if (typeof postMessage === 'function')
+            postMessage({type : 'progress', done : $0, total : $1});
+        }, done, total);
+      },
+      nullptr);
   int total = 0;
   bool first = true;
   std::string js = "{\"mode\":\"lines\",\"lines\":[";
