@@ -1,0 +1,185 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>mathcam_cpp — 数式の写真を解く</title>
+<!--
+  CLI と同じ 1 本の道を通す: 記号検出（自作 ONNX ランタイムを emcc でビルド）-> レイアウト解析
+  -> CAS -> 解き方の手順。推論ライブラリは使っていない。
+
+  ローカルで見る:  python -m http.server -d . 8000   ->  http://127.0.0.1:8000/wasm/
+-->
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 14px/1.6 system-ui, sans-serif; margin: 0; padding: 16px 20px; }
+  h1 { font-size: 18px; margin: 0 0 2px; }
+  .sub { opacity: .7; margin-bottom: 14px; }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+  .stage { position: relative; display: inline-block; max-width: 100%; }
+  canvas { max-width: 100%; height: auto; display: block; border-radius: 6px; background: #fff; }
+  #boxes { position: absolute; left: 0; top: 0; pointer-events: none; }
+  .expr { font-size: 22px; font-weight: 600; margin: 10px 0 4px; }
+  .ans { font-size: 20px; color: #0a7; font-weight: 600; }
+  ol { padding-left: 22px; }
+  li { margin: 4px 0; }
+  .rule { font-weight: 600; }
+  .after { font-family: ui-monospace, monospace; opacity: .85; }
+  .note { opacity: .7; font-size: 13px; max-width: 76ch; }
+  button, select, label { font: inherit; }
+  button { padding: 5px 12px; border-radius: 6px; }
+  img.thumb { height: 34px; vertical-align: middle; background: #fff; border-radius: 4px; }
+</style>
+
+<h1>mathcam_cpp — 数式の写真を読んで、解き方まで出す</h1>
+<div class="sub">記号検出も CAS も自前。ブラウザは CLI と同じ道を通ります（<code>pure/pipeline.hpp</code>）。</div>
+
+<div class="row">
+  <button id="load">モデルを読む（12MB）</button>
+  <span id="status">まずモデルを読んでください</span>
+</div>
+
+<div class="row" id="samples"></div>
+
+<div class="row">
+  <input type="file" id="file" accept="image/*" disabled>
+  <button id="cam" disabled>カメラ</button>
+  <button id="shot" disabled>1 枚撮って読む</button>
+  <label><input type="checkbox" id="drawbox" checked> 検出した記号を囲む</label>
+</div>
+
+<div class="stage">
+  <canvas id="view"></canvas>
+  <canvas id="boxes"></canvas>
+</div>
+<video id="video" playsinline muted style="display:none"></video>
+
+<div class="expr" id="expr"></div>
+<div class="ans" id="ans"></div>
+<ol id="steps"></ol>
+
+<p class="note" id="foot">
+  サンプルは<b>このリポジトリの組版器で描いたもの</b>（<code>mathcam render</code>）なので、
+  画像のライセンス問題がありません。検出器は同じ組版器で作った合成データ 20,000 枚で学習していて、
+  合成画像に対する端から端までの正解率は <b>92〜98%</b>（<code>mathcam e2e</code> の実測）。
+  <b>実写の写真はまだ苦手です</b>（学習データに透視・影・ぼけを入れていないため）。
+  1 枚あたり 3 秒ほどかかります（自作ランタイムを WASM で動かしているため）。
+</p>
+
+<script>
+const stamp = Date.now();                 // コードだけキャッシュ避け（モデルには付けない）
+const $ = (id) => document.getElementById(id);
+const view = $('view'), boxes = $('boxes');
+const vctx = view.getContext('2d'), bctx = boxes.getContext('2d');
+let worker = null, busy = false, last = null;
+
+const SAMPLES = [
+  ['samples/s1.png', '二次（因数分解できる）'],
+  ['samples/s2.png', '分数つきの一次方程式'],
+  ['samples/s3.png', '式の展開（方程式でないときは計算する）'],
+  ['samples/s4.png', '二次（解の公式）'],
+  ['samples/s5.png', '二次（係数つき）'],
+];
+
+for (const [src, label] of SAMPLES) {
+  const b = document.createElement('button');
+  b.className = 'sample';
+  b.disabled = true;
+  b.title = label;
+  b.innerHTML = '<img class="thumb" src="' + src + '" alt="">';
+  b.onclick = () => loadImage(src);
+  $('samples').appendChild(b);
+}
+
+function setStatus(t) { $('status').textContent = t; }
+
+$('load').onclick = () => {
+  if (!worker) {
+    worker = new Worker('worker.js?v=' + stamp);
+    worker.onmessage = (ev) => {
+      const m = ev.data;
+      if (m.type === 'loaded') {
+        setStatus('モデル読み込み完了（' + m.nodes + ' ノード, ' + (m.bytes / 1e6).toFixed(1) + ' MB）');
+        $('file').disabled = false;
+        $('cam').disabled = false;
+        document.querySelectorAll('.sample').forEach(b => b.disabled = false);
+        return;
+      }
+      if (m.type === 'result') { draw(m); busy = false; return; }
+      if (m.type === 'error') { setStatus('エラー: ' + m.message); busy = false; }
+    };
+  }
+  setStatus('モデルを読んでいます…');
+  worker.postMessage({type: 'load', url: '../models/sym_det.onnx', stamp});
+};
+
+function loadImage(src) {
+  const img = new Image();
+  img.onload = () => { last = img; run(); };
+  img.onerror = () => setStatus('画像を読めません: ' + src);
+  img.src = src;
+}
+
+function run() {
+  if (!worker || busy || !last) return;
+  busy = true;
+  const w = last.naturalWidth || last.videoWidth;
+  const h = last.naturalHeight || last.videoHeight;
+  view.width = boxes.width = w;
+  view.height = boxes.height = h;
+  vctx.drawImage(last, 0, 0, w, h);
+  bctx.clearRect(0, 0, w, h);
+  $('expr').textContent = '';
+  $('ans').textContent = '';
+  $('steps').innerHTML = '';
+  const rgba = vctx.getImageData(0, 0, w, h).data;
+  setStatus(w + 'x' + h + ' を読んでいます…（3 秒ほど）');
+  worker.postMessage({type: 'run', rgba, w, h, imgsz: 640, conf: 0.25}, [rgba.buffer]);
+}
+
+function draw(m) {
+  setStatus(m.count + ' 記号、' + (m.ms / 1000).toFixed(1) + ' 秒');
+  if ($('drawbox').checked && m.syms) {
+    bctx.clearRect(0, 0, boxes.width, boxes.height);
+    bctx.strokeStyle = '#00b0ff';
+    bctx.fillStyle = '#00b0ff';
+    bctx.lineWidth = 1.5;
+    bctx.font = '11px system-ui';
+    for (const s of m.syms) {
+      bctx.strokeRect(s.x0, s.y0, s.x1 - s.x0, s.y1 - s.y0);
+      bctx.fillText(s.cls, s.x0, Math.max(9, s.y0 - 2));
+    }
+  }
+  if (m.error) { $('expr').textContent = '読めませんでした: ' + m.error; return; }
+  $('expr').textContent = m.expr || '';
+  const ans = m.answer || [];
+  if (m.kind === 'value') $('ans').textContent = '= ' + ans.join(', ');
+  else if (m.kind === 'identity') $('ans').textContent = 'すべての値で成り立つ';
+  else if (m.kind === 'contradiction') $('ans').textContent = '解なし（矛盾）';
+  else if (!ans.length) $('ans').textContent = '実数解なし';
+  else $('ans').textContent = ans.map(a => (m.var || 'x') + ' = ' + a).join(',  ');
+  for (const st of (m.steps || [])) {
+    const li = document.createElement('li');
+    li.innerHTML = '<span class="rule">[' + st.rule + ']</span> ' + st.note +
+                   '<br><span class="after">' + st.after + '</span>';
+    $('steps').appendChild(li);
+  }
+}
+
+$('file').onchange = (e) => {
+  const f = e.target.files[0];
+  if (f) loadImage(URL.createObjectURL(f));
+};
+
+$('cam').onclick = async () => {
+  try {
+    const s = await navigator.mediaDevices.getUserMedia({video: {width: 1280, height: 720}});
+    $('video').srcObject = s;
+    await $('video').play();
+    $('shot').disabled = false;
+    setStatus('カメラ待機中。「1 枚撮って読む」で 1 フレーム処理します');
+  } catch (e) { setStatus('カメラを開けません: ' + e.message); }
+};
+
+$('shot').onclick = () => {
+  const v = $('video');
+  if (v.videoWidth) { last = v; run(); }
+};
+</script>

@@ -12,7 +12,7 @@ Photomath のようなものを、**認識も計算も自前**で作る。姉妹
 
 | 部品 | 中身 | 状態 |
 |---|---|---|
-| ① 認識 | 写真 → 記号の検出 → **2 次元レイアウト解析** → 式木 | 未着手 |
+| ① 認識 | 写真 → 記号の検出 → **2 次元レイアウト解析** → 式木 | **合成データで完了**（検出 mAP50 0.9939、レイアウト解析 100%、端から端まで 98.3%）。実写は未検証 |
 | ② 計算 | 式木を書き換えて答えを出す（厳密有理数の CAS） | **一次・二次方程式まで完了**（両言語 + パリティ） |
 | ③ 手順 | 「名前のついた書き換え」を並べて見せる | **完了**（移項・分母を払う・因数分解・解の公式…） |
 
@@ -64,6 +64,45 @@ Python 側も同じことができる（`python tools/expr.py --expr ...` /
 python tools/parity/expr.py  --n 900   # 正規形・LaTeX・往復不変（印字したものを読み直せるか）
 python tools/parity/solve.py --n 200   # 手順の全行（規則名・説明・各段の式）と答え
 ```
+
+## 写真から解く（① 認識）
+
+```sh
+# 組版器でお手本の画像を作って、それを写真として読ませる
+./mathcam.exe render --expr "x^2 - 5x + 6 = 0" --out q.png --px 56
+./mathcam.exe photo --img q.png --steps --show-syms
+#   9 記号を検出
+#     x (12,40)-(41,66) / 2 (42,13)-(59,40) / - ... （--show-syms のとき枠も出す）
+#   読めた式: x^2 - 5*x + 6 = 0
+#   1. [因数分解] 左辺を積の形にする   (x - 3)*(x - 2) = 0
+#   2. [積が 0] ...                    x = 3 / x = 2
+
+./mathcam.exe selftest --n 200      # 組版 -> 解析 の往復（レイアウト解析の正解率）
+./mathcam.exe e2e --n 120           # 検出 -> 解析 -> solve（端から端まで）
+```
+
+検出器の学習は Python（Ultralytics）:
+
+```sh
+./mathcam.exe dataset --out data/train --n 20000   # 合成データ。外部データセットは要らない
+python tools/train_det.py --data data --epochs 40 --imgsz 640   # GPU
+python tools/train_det.py --export-only --weights runs/.../best.pt  # NMS なしで ONNX
+```
+
+**写真の道は 1 本だけ**（`pure/pipeline.hpp`）。CLI と WASM が同じ関数を通る。
+前処理を 2 か所に書くと、片方だけ直して「ブラウザだと精度が出ない」という状態になる。
+
+## ブラウザで動かす（WASM デモ）
+
+```sh
+sh build/emcc.sh wasm/mathcam_wasm.cpp -o wasm/mathcam.js
+python -m http.server 8000          # -> http://127.0.0.1:8000/wasm/
+node wasm/test_node.js              # ブラウザ抜きの検査（サンプルを解いて答え合わせ）
+```
+
+サンプル画像 5 枚（**このリポジトリの組版器で描いたもの**なので画像のライセンス問題がない）、
+ファイル選択、カメラ 1 枚撮り、検出枠の重ね描き、手順表示。1 枚 1.3〜2.7 秒（自作ランタイム）。
+推論は Worker で回す（UI スレッドでやると固まって「壊れている」ように見える）。
 
 ## 設計で決めたこと（理由つき）
 
