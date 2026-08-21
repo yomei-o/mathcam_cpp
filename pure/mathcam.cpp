@@ -608,8 +608,15 @@ static int cmd_photo(int argc, char** argv) {
     printf("切り出し: %dx%d\n", w, h);
     if (!save_crop.empty()) stbi_write_png(save_crop.c_str(), w, h, 3, px, w * 3);
   }
+  // 試して**やめた**こと: 推論の前にコントラストを伸ばして白紙・黒字に寄せる。
+  // 実写の紙 225 / 字 60 は学習データの範囲（紙 215..255 / 字 20..90）に既に入っていて、
+  // 伸ばすと紙の地合いが字に変わるだけだった（実測: 9 記号のはずが 62 記号検出された）。
   onx::Graph g = onx::load_onnx(model_p);
-  if (g.nodes.empty()) { printf("cannot read %s\n", model_p.c_str()); stbi_image_free(px); return 1; }
+  if (g.nodes.empty()) {
+    printf("cannot read %s\n", model_p.c_str());
+    if (cropped.empty()) stbi_image_free(px);
+    return 1;
+  }
   // e2e と WASM と同じ 1 本を通す（pure/pipeline.hpp）
   const pipeln::Detected det = pipeln::detect_syms(g, px, w, h, imgsz, conf, nms, fmt);
   if (cropped.empty()) stbi_image_free(px);      // 切り出し時は cropped の持ち物なので触らない
