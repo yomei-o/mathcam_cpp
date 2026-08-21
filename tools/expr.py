@@ -489,12 +489,43 @@ def disp_degree(e):
     return 1
 
 
+def term_degs(e, out=None):
+    """項の中の「変数 -> 次数」（表示の並び替え用）。"""
+    if out is None:
+        out = {}
+    if e.k == SYM:
+        out[e.name] = out.get(e.name, 0) + 1
+        return out
+    if e.k == POW and is_sym(e.kids[0]) and is_num(e.kids[1]) and e.kids[1].num.is_int():
+        out[e.kids[0].name] = out.get(e.kids[0].name, 0) + e.kids[1].num.n
+        return out
+    for c in e.kids:
+        term_degs(c, out)
+    return out
+
+
+def _disp_cmp(a, b):
+    """表示順の比較（C++ の disp_terms の比較関数と同じ）。
+
+    1. 次数の降順（人は x^2 - 5x + 6 の順で書く）
+    2. 同じ次数なら、変数ごとの次数を変数名の順に見て、次数の大きい方を先に
+       （教科書は x^2 + 12xy + 36y^2 の順。正規順序だけだと `2x - y` が `-y + 2*x` と出る）
+    3. それでも決まらなければ正規順序
+    """
+    da, db = disp_degree(a), disp_degree(b)
+    if da != db:
+        return -1 if da > db else 1
+    va, vb = term_degs(a), term_degs(b)
+    for n in sorted(set(va) | set(vb)):
+        ea, eb = va.get(n, 0), vb.get(n, 0)
+        if ea != eb:
+            return -1 if ea > eb else 1
+    return cmp(a, b)
+
+
 def disp_terms(e):
-    ts = list(e.kids)
-    # 次数の降順、同じ次数なら正規順序。C++ の stable_sort と同じ結果になるように安定ソート
-    ts.sort(key=lambda t: _Key(t))
-    ts.sort(key=lambda t: -disp_degree(t))
-    return ts
+    import functools
+    return sorted(e.kids, key=functools.cmp_to_key(_disp_cmp))
 
 
 def split_num_den(e):
@@ -779,8 +810,9 @@ class Parser:
                 return num(Rat(v * den + f, den))
             return num(v)
         if self.s[self.i].isalpha():
+            # 名前は**英字の連なりだけ**（数字は含めない。`x2` は x*2 と読む）
             name = ""
-            while self.i < len(self.s) and self.s[self.i].isalnum():
+            while self.i < len(self.s) and self.s[self.i].isalpha():
                 name += self.s[self.i]
                 self.i += 1
             # **関数呼び出しは名前が関数のときだけ**。そうしないと `2x(x - 1)` の `x(...)` が
@@ -793,6 +825,9 @@ class Parser:
                 if not self.eat(")"):
                     self.err = "関数の閉じ括弧がありません"
                 return fn_e(name, args)
+            # **英字が続いたら 1 文字ずつの変数の積**（`12xy` は 12*x*y。教科書はそう書く）
+            if len(name) > 1:
+                return mul_n([sym(c) for c in name])
             return sym(name)
         self.err = "読めない文字: " + self.s[self.i]
         self.i += 1

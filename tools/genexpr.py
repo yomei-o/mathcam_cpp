@@ -86,8 +86,12 @@ def _quad(var, a, b, c):
 
 
 def one(r):
-    VARS = ["x", "x", "x", "y", "t"]
-    var = VARS[r.below(5)]
+    # **クラス表にある文字を全部出す**（x, y, t だけだと a・b・p が学習データに出ず、
+    # 実写で a が x、b と p が t に化けた）。C++ の kVars と同じ並び・同じ重み
+    VARS = ["x", "x", "x", "x", "x", "x", "y", "y", "y", "t", "t",
+            "a", "a", "b", "b", "c", "n", "p", "q", "r",
+            "s", "e", "g", "i", "o", "l"]
+    var = VARS[r.below(26)]
     kind = r.below(100)
     if kind < 35:
         return term(r, var, 2)

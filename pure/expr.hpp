@@ -449,12 +449,68 @@ inline long long disp_degree(const E& e) {
   }
 }
 
-// 和の項を表示順に並べたもの（次数の降順、同じ次数なら正規順序）
+// 項に出てくる変数のうち、辞書順で最初のもの（表示の並び替えに使う）
+inline std::string disp_var(const E& e) {
+  if (e->k == Kind::Sym) return e->name;
+  std::string best;
+  for (const E& c : e->kids) {
+    const std::string v = disp_var(c);
+    if (v.empty()) continue;
+    if (best.empty() || v < best) best = v;
+  }
+  return best;
+}
+
+// 項の中の「変数 -> 次数」（表示の並び替え用。変数名の順に並べて返す）
+inline void term_degs(const E& e, std::vector<std::pair<std::string, long long>>& out) {
+  if (e->k == Kind::Sym) {
+    for (std::pair<std::string, long long>& p : out)
+      if (p.first == e->name) { p.second += 1; return; }
+    out.push_back({e->name, 1});
+    return;
+  }
+  if (e->k == Kind::Pow && is_sym(e->kids[0]) && is_num(e->kids[1]) &&
+      e->kids[1]->num.is_int()) {
+    const long long d = e->kids[1]->num.n;
+    for (std::pair<std::string, long long>& p : out)
+      if (p.first == e->kids[0]->name) { p.second += d; return; }
+    out.push_back({e->kids[0]->name, d});
+    return;
+  }
+  for (const E& c : e->kids) term_degs(c, out);
+}
+
+inline long long deg_of(const std::vector<std::pair<std::string, long long>>& v,
+                       const std::string& name) {
+  for (const std::pair<std::string, long long>& p : v)
+    if (p.first == name) return p.second;
+  return 0;
+}
+
+// 和の項を表示順に並べたもの。
+//
+//   1. 次数の降順（人は x^2 - 5x + 6 の順で書く）
+//   2. 同じ次数なら、**変数ごとの次数を変数名の順に見て、次数の大きい方を先**にする
+//      （教科書は x^2 + 12xy + 36y^2 の順。正規順序だけだと係数の大小で並んで
+//        `2x - y` が `-y + 2*x` と出る。実写の `(2x - y)^2` を読んだときに出た）
+//   3. それでも決まらなければ正規順序（決定的にするため）
 inline std::vector<E> disp_terms(const E& e) {
   std::vector<E> ts = e->kids;
   std::stable_sort(ts.begin(), ts.end(), [](const E& a, const E& b) {
     const long long da = disp_degree(a), db = disp_degree(b);
     if (da != db) return da > db;
+    std::vector<std::pair<std::string, long long>> va, vb;
+    term_degs(a, va);
+    term_degs(b, vb);
+    std::vector<std::string> names;
+    for (const std::pair<std::string, long long>& p : va) names.push_back(p.first);
+    for (const std::pair<std::string, long long>& p : vb) names.push_back(p.first);
+    std::sort(names.begin(), names.end());
+    names.erase(std::unique(names.begin(), names.end()), names.end());
+    for (const std::string& n : names) {
+      const long long ea = deg_of(va, n), eb = deg_of(vb, n);
+      if (ea != eb) return ea > eb;
+    }
     return cmp(a, b) < 0;
   });
   return ts;
@@ -774,8 +830,9 @@ struct Parser {
       return num(Rat(v));
     }
     if (isalpha((unsigned char)s[i])) {
+      // 名前は**英字の連なりだけ**（数字は含めない。`x2` は x*2 と読む）
       std::string name;
-      while (i < s.size() && isalnum((unsigned char)s[i])) name += s[i++];
+      while (i < s.size() && isalpha((unsigned char)s[i])) name += s[i++];
       // **関数呼び出しは名前が関数のときだけ**。そうしないと `2x(x - 1)` の `x(...)` が
       // 「関数 x の呼び出し」になり、`2x(x-1) = 5` が展開できない式として残る
       // （実写の写真でこの形が出て、答えが出せなかった）。数式では変数のあとの括弧は掛け算。
@@ -785,6 +842,13 @@ struct Parser {
         while (eat(',')) args.push_back(parse_add());
         if (!eat(')')) err = "関数の閉じ括弧がありません";
         return fn_e(name, args);
+      }
+      // **英字が続いたら 1 文字ずつの変数の積**（`12xy` は 12*x*y。教科書はそう書く）。
+      // 1 つの変数 "xy" にしていたら、次数が 1 と数えられて表示順も展開も狂った。
+      if (name.size() > 1) {
+        std::vector<E> fs;
+        for (char c : name) fs.push_back(sym(std::string(1, c)));
+        return mul_n(fs);
       }
       return sym(name);
     }

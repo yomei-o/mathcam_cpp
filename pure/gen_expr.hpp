@@ -54,8 +54,13 @@ inline std::string term(Rng& r, const std::string& var, int depth) {
 
 // 1 件。方程式にするかどうかも乱数で決める
 inline std::string one(Rng& r) {
-  static const char* kVars[] = {"x", "x", "x", "y", "t"};
-  const std::string var = kVars[r.below(5)];
+  // **クラス表にある文字を全部出す。** x, y, t だけで作っていたら、a・b・p などは
+  // 学習データに 1 度も出ず、実写で `a` が `x`、`b` と `p` が `t` に化けた（実測）。
+  // 重みは実物に近づける（x と y が多く、a・b がそれに次ぐ）。
+  static const char* kVars[] = {"x", "x", "x", "x", "x", "x", "y", "y", "y", "t", "t",
+                                "a", "a", "b", "b", "c", "n", "p", "q", "r",
+                                "s", "e", "g", "i", "o", "l"};
+  const std::string var = kVars[r.below(26)];
   const uint64_t kind = r.below(100);
   if (kind < 35) {                                  // 式だけ（計算問題）
     return term(r, var, 2);
