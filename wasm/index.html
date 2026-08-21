@@ -28,11 +28,14 @@
   .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
   .stage { position: relative; display: inline-block; max-width: 100%; touch-action: none;
            border: 1px solid #8888; border-radius: 6px; min-width: 200px; min-height: 60px; }
-  canvas { max-width: 100%; height: auto; display: block; border-radius: 6px; background: #fff; }
+  canvas { max-width: 100%; height: auto; display: block; border-radius: 6px; }
   /* 写真は**幅いっぱいに出す**。小さく出ると囲む場所が狙えない */
-  #view { width: 100%; }
+  #view { width: 100%; background: #fff; }
   .stage { width: 100%; max-width: 1100px; }
-  #over { position: absolute; left: 0; top: 0; width: 100%; height: 100%; pointer-events: none; }
+  /* **重ね描きのカンバスに背景色を付けない。** canvas 全体に background:#fff を掛けていたので、
+     上に載っているこれが不透明な白になり、写真が真っ白に見えていた（実際にそう報告された） */
+  #over { position: absolute; left: 0; top: 0; width: 100%; height: 100%; pointer-events: none;
+          background: none; }
   #cropwrap { display: none; margin: 8px 0; }
   #crop { border: 1px solid #8888; max-height: 160px; width: auto; }
   .expr { font-size: 22px; font-weight: 600; margin: 12px 0 2px; }
@@ -434,6 +437,35 @@ $('cam').onclick = async () => {
     setStatus('カメラ待機中。「1 枚撮る」で止めてから、式を囲みます');
   } catch (e) { setStatus('カメラを開けません: ' + e.message); }
 };
+
+// ?img=... で画像を指定して開ける（人に「この写真で試して」と渡せる）。
+// ?sel=x0,y0,x1,y1&run=one|lines を足すと、その範囲を選んでそのまま読む。
+// **ブラウザを人が触らずに検査できる**ようにするため（この道が壊れていても node の検査では
+// 見えない。実際に「写真が真っ白」を人に指摘されるまで気付けなかった）:
+//   chrome --headless=new --screenshot=shot.png "http://127.0.0.1:8000/wasm/?img=a.png&sel=1,2,3,4&run=one"
+const qp = new URLSearchParams(location.search);
+if (qp.get('img')) {
+  const im2 = new Image();
+  im2.onload = () => {
+    img = im2; rot = 0; sel = null; corner = null;
+    srcW = im2.naturalWidth; srcH = im2.naturalHeight;
+    redraw();
+    const q = (qp.get('sel') || '').split(',').map(Number);
+    if (q.length === 4 && q.every(v => !isNaN(v))) {
+      sel = {x0: q[0], y0: q[1], x1: q[2], y1: q[3]};
+      $('runSel').disabled = false;
+      $('clr').disabled = false;
+      showSel();
+      paint();
+    }
+    setStatus(srcW + 'x' + srcH + ' の画像を ' + view.width + 'x' + view.height + ' で表示中');
+    const r = qp.get('run');
+    if (r === 'lines') run('lines', null);
+    else if (r) run('one', sel);
+  };
+  im2.onerror = () => setStatus('画像を読めません: ' + qp.get('img'));
+  im2.src = qp.get('img');
+}
 
 $('shot').onclick = () => {
   const v = $('video');
