@@ -13,8 +13,8 @@ Photomath のようなものを、**認識も計算も自前**で作る。姉妹
 | 部品 | 中身 | 状態 |
 |---|---|---|
 | ① 認識 | 写真 → 記号の検出 → **2 次元レイアウト解析** → 式木 | 未着手 |
-| ② 計算 | 式木を書き換えて答えを出す（厳密有理数の CAS） | **作り始めた** |
-| ③ 手順 | 「名前のついた書き換え」を並べて見せる | 設計済み・実装は次 |
+| ② 計算 | 式木を書き換えて答えを出す（厳密有理数の CAS） | **一次・二次方程式まで完了**（両言語 + パリティ） |
+| ③ 手順 | 「名前のついた書き換え」を並べて見せる | **完了**（移項・分母を払う・因数分解・解の公式…） |
 
 **①より②を先に作る。** 理由は、②が決める式木が認識側の出力契約になるからで、
 先に認識を作ると「何に向けて認識するのか」が決まらない。②はデータもモデルも要らないので
@@ -43,6 +43,26 @@ sh build/gcc.sh pure/mathcam.cpp -o mathcam.exe    # mingw / g++
 ./mathcam.exe eval --expr "8^(1/3)"                # -> 2
 ./mathcam.exe eval --expr "x^2 - 5x + 6 = 0"       # -> x^2 - 5*x + 6 = 0（次数の降順で表示）
 ./mathcam.exe eval --expr "1/2 x + 1/3 x" --latex  # -> 5/6*x    / latex: \frac{5}{6} x
+./mathcam.exe eval --expr "sqrt(8)"                # -> 2*sqrt(2)（根号の中の平方因数を外に出す）
+
+./mathcam.exe solve --expr "x^2 - 5x + 6 = 0" --steps
+#   1. [因数分解] 左辺を積の形にする
+#      (x - 3)*(x - 2) = 0
+#   2. [積が 0] 積が 0 になるのは、どちらかの因数が 0 のとき: x - 3 = 0 または x - 2 = 0
+#   x = 3
+#   x = 2
+
+./mathcam.exe solve --expr "x/2 + x/3 = 5" --steps  # 移項→分母を払う→移項→両辺を割る→x = 6
+./mathcam.exe solve --expr "3x^2 + 5x - 2 = 0" --steps  # (3*x - 1)*(x + 2) = 0
+./mathcam.exe solve --expr "x^2 + x = 1" --steps    # 解の公式→x = 1/2*(sqrt(5) - 1)（厳密なまま）
+```
+
+Python 側も同じことができる（`python tools/expr.py --expr ...` /
+`python tools/solve.py --expr ... --steps`）。**両実装の一致はテストで縛る**:
+
+```sh
+python tools/parity/expr.py  --n 900   # 正規形・LaTeX・往復不変（印字したものを読み直せるか）
+python tools/parity/solve.py --n 200   # 手順の全行（規則名・説明・各段の式）と答え
 ```
 
 ## 設計で決めたこと（理由つき）
