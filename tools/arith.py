@@ -204,7 +204,13 @@ def main():
     for i, st in enumerate(r.steps, 1):
         print("%d. [%s] %s" % (i, st.rule, st.note))
         print("   %s" % st.after)
-    print(to_text(r.value, dec_ok) if r.value is not None else "(計算できない)")
+    # **畳めるところまで出す。** 文字が混ざると数にはならない（`7 × n + 3`）ので、
+    # そのときは通常の木を展開した形を出す（C++ の cmd_solve と同じ）
+    if r.ok:
+        print(to_text(r.value, dec_ok))
+    else:
+        e2, err2 = X.parse(a.expr)
+        print(X.to_infix(X.expand(e2)) if not err2 else "(計算できない)")
     return 0
 
 

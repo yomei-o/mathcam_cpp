@@ -108,12 +108,17 @@ inline Detected detect_syms(const onx::Graph& g, const unsigned char* rgb, int w
 // **閾値は行ごとに取る**（その行の中央値より暗い画素を数える）。1 枚に 1 つの閾値
 // （Otsu）にすると、光沢や影で明るさが場所ごとに違う写真では、暗い側の背景が全部
 // 「インク」になって行が分けられない（実測: 教科書のページで帯が 1 つになった）。
+//
+// **数える下限は「最も濃い行の何割か」で決める**（固定の px 数では駄目だった）。実測:
+// 教科書 1 ページ（2016x1512）は隣のページの写り込みと 2 段組みのせいで、どの行にも
+// 少しインクがある。下限 w/200 = 10 では**全体が 1 帯（y 0..1287）**になった。
+// 最大値の 12% にすると 9 帯に分かれ、1 問ずつの欄（1200x460）では 0.5%〜20% の
+// どれでも 4 行に切れた（つまりこの割合は効き方が鈍く、安全側）。
 inline std::vector<std::pair<int, int>> ink_bands(const unsigned char* rgb, int w, int h,
-                                                 int pad_px = 0) {
+                                                 int pad_px = 0, int pct_of_max = 12) {
   std::vector<unsigned char> gray((size_t)w * h);
   for (size_t i = 0; i < gray.size(); ++i)
     gray[i] = (unsigned char)((rgb[i * 3] * 30 + rgb[i * 3 + 1] * 59 + rgb[i * 3 + 2] * 11) / 100);
-  const int min_ink = std::max(3, w / 200);        // 幅に対する下限（ノイズを弾く）
   std::vector<int> ink((size_t)h, 0);
   std::vector<int> row(  (size_t)w, 0);
   for (int y = 0; y < h; ++y) {
@@ -126,6 +131,9 @@ inline std::vector<std::pair<int, int>> ink_bands(const unsigned char* rgb, int 
       if (row[(size_t)x] < paper - 30) ++c;
     ink[(size_t)y] = c;
   }
+  int mx = 0;
+  for (int y = 0; y < h; ++y) mx = std::max(mx, ink[(size_t)y]);
+  const int min_ink = std::max(std::max(3, w / 200), mx * pct_of_max / 100);
   std::vector<std::pair<int, int>> bands;
   int y = 0;
   while (y < h) {
@@ -153,6 +161,66 @@ inline std::vector<std::pair<int, int>> ink_bands(const unsigned char* rgb, int 
   for (const std::pair<int, int>& b : merged) {
     if (b.second - b.first < std::max(6, med / 3)) continue;
     out.push_back({std::max(0, b.first - pad_px), std::min(h, b.second + pad_px)});
+  }
+  return out;
+}
+
+// 塊（1 式ぶん）とその中の記号。detect_by_cells が返す。
+struct Cell {
+  int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+  std::vector<pl::Sym> syms;
+};
+
+// **粗く検出してから、塊ごとに元画像から読み直す。**
+//
+// 行に切るだけでは足りない（実測: 教科書の 1200x460 の欄を 4 行に切っても、1 行が
+// 1200x60 なので 640 に縮む段で 0.53 倍になり、31 記号のうち半分が化けた）。**当たるのは
+// 1 式ぶんを囲んだとき**（280x90 なら 640 に 2 倍以上に拡大される。実測 11/12）。
+// そこで 2 段にする: 行の帯で 1 回検出して**塊の位置だけ**を得て、塊ごとに元画像から
+// 切り出して読み直す。粗い側が化けても位置は取れるので、2 段目で精度が戻る。
+inline std::vector<Cell> detect_by_cells(const onx::Graph& g, const unsigned char* rgb, int w,
+                                        int h, int imgsz, float conf, float nms, BoxFmt fmt) {
+  std::vector<Cell> out;
+  const std::vector<std::pair<int, int>> bands = ink_bands(rgb, w, h, 4);
+  for (const std::pair<int, int>& b : bands) {
+    const int bh = b.second - b.first;
+    if (bh <= 0) continue;
+    std::vector<unsigned char> sub((size_t)w * bh * 3);
+    for (int y = 0; y < bh; ++y)
+      std::memcpy(&sub[(size_t)y * w * 3], rgb + ((size_t)(y + b.first) * w) * 3, (size_t)w * 3);
+    Detected d = detect_syms(g, sub.data(), w, bh, imgsz, conf, nms, fmt);
+    for (pl::Sym& s : d.syms) { s.y0 += b.first; s.y1 += b.first; s.base_y += b.first; }
+    if (d.syms.empty()) continue;
+    for (const std::vector<pl::Sym>& c : pl::split_cells(d.syms)) {
+      int x0 = c[0].x0, y0 = c[0].y0, x1 = c[0].x1, y1 = c[0].y1;
+      std::vector<int> hs;
+      for (const pl::Sym& s : c) {
+        x0 = std::min(x0, s.x0); y0 = std::min(y0, s.y0);
+        x1 = std::max(x1, s.x1); y1 = std::max(y1, s.y1);
+        hs.push_back(s.h());
+      }
+      std::sort(hs.begin(), hs.end());
+      // **余白を字の高さぶん取る**（上付きや分数線が帯の外に出ていることがある）
+      const int pad = std::max(6, hs[hs.size() / 2] / 2);
+      const int cx0 = std::max(0, x0 - pad), cy0 = std::max(0, y0 - pad);
+      const int cx1 = std::min(w, x1 + pad), cy1 = std::min(h, y1 + pad);
+      const int cw = cx1 - cx0, chh = cy1 - cy0;
+      if (cw < 8 || chh < 8) continue;
+      std::vector<unsigned char> cell((size_t)cw * chh * 3);
+      for (int y = 0; y < chh; ++y)
+        std::memcpy(&cell[(size_t)y * cw * 3], rgb + ((size_t)(y + cy0) * w + cx0) * 3,
+                    (size_t)cw * 3);
+      Detected d2 = detect_syms(g, cell.data(), cw, chh, imgsz, conf, nms, fmt);
+      if (d2.syms.empty()) continue;
+      Cell res;
+      res.x0 = cx0; res.y0 = cy0; res.x1 = cx1; res.y1 = cy1;
+      for (pl::Sym& s : d2.syms) {
+        s.x0 += cx0; s.x1 += cx0;
+        s.y0 += cy0; s.y1 += cy0; s.base_y += cy0;
+        res.syms.push_back(s);
+      }
+      out.push_back(res);
+    }
   }
   return out;
 }

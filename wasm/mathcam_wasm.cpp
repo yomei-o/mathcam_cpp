@@ -149,7 +149,8 @@ EMSCRIPTEN_KEEPALIVE int mc_run(const unsigned char* rgba, int w, int h, int img
   return (int)det.syms.size();
 }
 
-// ページ 1 枚を**行ごとに**読む。CLI の photo --auto-lines と同じ道（pipeln::detect_by_lines）。
+// ページや欄をまるごと**塊ごとに**読む。CLI の photo --auto-cells と同じ道
+// （pipeln::detect_by_cells）。行の帯で位置を取り、塊ごとに元画像から読み直す 2 段構え。
 //
 // 広い範囲をそのまま 640 に縮めると字が潰れて何も出ない（実測: 4 問ぶん 1140x350 を囲むと
 // 7 記号しか出なかった）。**先にインクの横方向の射影で行に切り、行ごとに検出する**と、
@@ -164,19 +165,24 @@ EMSCRIPTEN_KEEPALIVE int mc_run_lines(const unsigned char* rgba, int w, int h, i
     rgb[i * 3 + 1] = rgba[i * 4 + 1];
     rgb[i * 3 + 2] = rgba[i * 4 + 2];
   }
-  std::vector<std::pair<int, int>> bands;
-  const std::vector<std::vector<pl::Sym>> lines =
-      pipeln::detect_by_lines(g_graph, rgb.data(), w, h, imgsz > 0 ? imgsz : 640,
-                              conf > 0.f ? conf : 0.25f, 0.45f, BoxFmt::CXCYWH, &bands);
+  const std::vector<pipeln::Cell> cells =
+      pipeln::detect_by_cells(g_graph, rgb.data(), w, h, imgsz > 0 ? imgsz : 640,
+                              conf > 0.f ? conf : 0.25f, 0.45f, BoxFmt::CXCYWH);
   int total = 0;
+  bool first = true;
   std::string js = "{\"mode\":\"lines\",\"lines\":[";
-  for (size_t i = 0; i < lines.size(); ++i) {
-    total += (int)lines[i].size();
-    js += (i ? ",{" : "{");
-    js += "\"band_y0\":" + std::to_string(bands[i].first) +
-          ",\"band_y1\":" + std::to_string(bands[i].second) +
-          ",\"syms\":" + syms_json(lines[i]) + ",";
-    js += one_json(pl::parse(lines[i]), &lines[i]) + "}";
+  for (const pipeln::Cell& c : cells) {
+    const pl::Result cr = pl::parse(c.syms);
+    // 問題番号（ただの数になる塊）と、記号が 2 つ以下で読めない塊は出さない
+    if (cr.ok && ex::is_num(cr.e)) continue;
+    if (!cr.ok && c.syms.size() < 3) continue;
+    total += (int)c.syms.size();
+    js += (first ? "{" : ",{");
+    first = false;
+    js += "\"x0\":" + std::to_string(c.x0) + ",\"y0\":" + std::to_string(c.y0) +
+          ",\"x1\":" + std::to_string(c.x1) + ",\"y1\":" + std::to_string(c.y1) +
+          ",\"syms\":" + syms_json(c.syms) + ",";
+    js += one_json(cr, &c.syms) + "}";
   }
   js += "],\"count\":" + std::to_string(total) + "}";
   g_result = js;

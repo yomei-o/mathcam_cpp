@@ -102,10 +102,10 @@ function decodePng(buf) {
                      [p, w, h, 640, 0.25]);
   M._free(p);
   const resl = JSON.parse(M.UTF8ToString(M.ccall('mc_result', 'number', [], [])));
-  console.log('lines :', (resl.lines || []).length, '行、記号', nl);
+  console.log('cells :', (resl.lines || []).length, '塊、記号', nl);
   for (const l of (resl.lines || []))
-    console.log('  y', l.band_y0 + '..' + l.band_y1, l.expr || ('(読めない: ' + l.error + ')'),
-                '->', (l.answer || []).join(', '));
+    console.log('  (' + l.x0 + ',' + l.y0 + ')-(' + l.x1 + ',' + l.y1 + ')',
+                l.expr || ('(読めない: ' + l.error + ')'), '->', (l.answer || []).join(', '));
 
   if (!strict) return;
   const want_expr = 'x^2 - 5*x + 6 = 0';
@@ -117,8 +117,8 @@ function decodePng(buf) {
   if (got_ans.join(',') !== want_ans.slice().sort().join(',')) bad.push('answer: ' + got_ans);
   if (!(res.steps || []).length) bad.push('手順が空');
   const l0 = (resl.lines || [])[0] || {};
-  if ((resl.lines || []).length !== 1) bad.push('行の数: ' + (resl.lines || []).length + ' != 1');
-  if (l0.expr !== want_expr) bad.push('行の式: ' + l0.expr + ' != ' + want_expr);
+  if ((resl.lines || []).length !== 1) bad.push('塊の数: ' + (resl.lines || []).length + ' != 1');
+  if (l0.expr !== want_expr) bad.push('塊の式: ' + l0.expr + ' != ' + want_expr);
   if (bad.length) { console.error('FAIL'); for (const b of bad) console.error(' ', b); process.exit(1); }
   console.log('OK');
 })().catch((e) => { console.error(e); process.exit(1); });

@@ -42,6 +42,14 @@ def pick(r, lo, hi):
     return lo + r.below(hi - lo + 1)
 
 
+# 変数に使う文字。**クラス表にある文字を全部出す**（x, y, t だけだと a・b・p が学習データに
+# ほとんど出ず、実写で a が x、b と p が t に化けた）。x を少し厚くするのは教科書がそうだから。
+# 26 個ちょうど（`below(26)` の 1 回で引く）。C++ の kVars と同じ並び・同じ重み。
+VARS = ["x", "x", "x", "x", "y", "y", "y", "t", "t",
+        "a", "a", "b", "b", "c", "c", "p", "p",
+        "q", "r", "s", "n", "e", "g", "i", "o", "l"]
+
+
 def atom(r, var, depth):
     k = r.below(100)
     if k < 45:
@@ -86,11 +94,6 @@ def _quad(var, a, b, c):
 
 
 def one(r):
-    # **クラス表にある文字を全部出す**（x, y, t だけだと a・b・p が学習データに出ず、
-    # 実写で a が x、b と p が t に化けた）。C++ の kVars と同じ並び・同じ重み
-    VARS = ["x", "x", "x", "x", "x", "x", "y", "y", "y", "t", "t",
-            "a", "a", "b", "b", "c", "n", "p", "q", "r",
-            "s", "e", "g", "i", "o", "l"]
     var = VARS[r.below(26)]
     kind = r.below(100)
     if kind < 35:
@@ -148,9 +151,20 @@ def arith(r):
     if kind < 85:                                    # 分数どうしの割り算
         an, ad, bn, bd = pick(r, 1, 9), pick(r, 2, 9), pick(r, 1, 9), pick(r, 2, 9)
         return "frac(%d,%d) ÷ frac(%d,%d)" % (an, ad, bn, bd)
-    # 大きい数の掛け算・引き算（103 × 12 - 36 のような形）
-    a, b, c = pick(r, 11, 199), pick(r, 2, 24), pick(r, 2, 99)
-    return "%d × %d - %d" % (a, b, c)
+    if kind < 92:                                    # 大きい数の掛け算・引き算（103 × 12 - 36）
+        a, b, c = pick(r, 11, 199), pick(r, 2, 24), pick(r, 2, 99)
+        return "%d × %d - %d" % (a, b, c)
+    # **文字と × ÷ を同じ絵に出す形。** これが無いと、検出器は「文字が出る絵」と
+    # 「× が出る絵」を別々に見ることになり、x と × を見分ける必要がない
+    # （実測: 実写で × が x と読まれた。出荷中のモデルは × のクラスすら持っていない）。
+    v = VARS[r.below(26)]
+    a, b = pick(r, 2, 12), pick(r, 2, 9)
+    f = r.below(3)
+    if f == 0:
+        return "%d × %s + %d" % (a, v, b)
+    if f == 1:
+        return "%s × %d - %d" % (v, a, b)
+    return "%d × %s ÷ %d" % (a, v, b)
 
 
 def main():

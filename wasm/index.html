@@ -75,7 +75,7 @@
 
 <div class="row">
   <button id="runSel" disabled>選んだ範囲を読む</button>
-  <button id="runLines" disabled>行を自動で切って全部読む</button>
+  <button id="runLines" disabled>囲んだ中（または全体）を1問ずつ読む</button>
   <button id="runAll" disabled>画像全体を 1 式として読む</button>
   <button id="clr" disabled>選択を消す</button>
 </div>
@@ -297,10 +297,10 @@ $('stage').addEventListener('pointerup', (e) => {
 
 $('runSel').onclick = () => sel && run('one', sel);
 $('runAll').onclick = () => run('one', null);
-$('runLines').onclick = () => run('lines', null);
+$('runLines').onclick = () => run('lines', sel);   // 囲んであればその中だけ
 
 // ---- 検出を頼む
-function rerun() { run(last.mode, last.mode === 'lines' ? null : sel); }
+function rerun() { run(last.mode, sel); }
 
 function run(mode, box) {
   if (!img) return;
@@ -322,7 +322,8 @@ function run(mode, box) {
     $('ans').textContent = '';
     $('steps').innerHTML = '';
     $('syms').textContent = '';
-    setStatus((mode === 'lines' ? '行に切って ' : '') + sw + 'x' + sh + ' を読んでいます…');
+    setStatus(sw + 'x' + sh + ' を読んでいます…' +
+              (mode === 'lines' ? '（1 問ずつ読み直すので、塊の数だけ時間がかかります）' : ''));
     worker.postMessage({type: mode === 'lines' ? 'runLines' : 'run',
                         rgba, w: sw, h: sh, imgsz: 640, conf: conf()}, [rgba.buffer]);
   });
@@ -360,8 +361,10 @@ function paint() {
   octx.lineWidth = Math.max(1, lw);
   if (m.mode === 'lines') {
     octx.strokeStyle = '#ffab00';
+    octx.lineWidth = Math.max(2, lw * 1.5);
     for (const l of (m.lines || []))
-      octx.strokeRect(ox, oy + l.band_y0 * s, view.width - ox, (l.band_y1 - l.band_y0) * s);
+      octx.strokeRect(ox + l.x0 * s, oy + l.y0 * s, (l.x1 - l.x0) * s, (l.y1 - l.y0) * s);
+    octx.lineWidth = Math.max(1, lw);
   }
   octx.strokeStyle = '#00b0ff';
   octx.fillStyle = '#00b0ff';

@@ -130,12 +130,16 @@ static int cmd_solve(int argc, char** argv) {
     // 書いたら小学校の答えとしては嘘になる）
     const bool dec_ok = src.find('.') != std::string::npos;
     const ar::Result ares = why2.empty() ? ar::eval_steps(rawe, dec_ok) : ar::Result();
-    if (ares.ok) {
+    if (why2.empty()) {
+      // **畳めるところまで出す。** 文字が混ざっていると数にはならないが（`7 × n + 3`）、
+      // 途中まで計算して見せるのが正しい。ここで諦めていたので、Python 側（tools/arith.py）
+      // だけが途中結果を出していて食い違っていた（生成器に `× 文字` を入れて初めて出た）。
       if (steps)
         for (size_t i = 0; i < ares.steps.size(); ++i)
           printf("%zu. [%s] %s\n   %s\n", i + 1, ares.steps[i].rule.c_str(),
                  ares.steps[i].note.c_str(), ares.steps[i].after.c_str());
-      printf("%s\n", ar::to_text(ares.value, dec_ok).c_str());
+      printf("%s\n", ares.ok ? ar::to_text(ares.value, dec_ok).c_str()
+                             : ex::to_infix(ex::expand(e)).c_str());
       return 0;
     }
     printf("solve: %s\n", s.why.c_str());
@@ -634,6 +638,13 @@ static int cmd_photo(int argc, char** argv) {
     h = cah;
     printf("切り出し: %dx%d\n", w, h);
     if (!save_crop.empty()) stbi_write_png(save_crop.c_str(), w, h, 3, px, w * 3);
+  } else {
+    // **画素はこの関数の終わりまで生かす。** 検出の直後に解放していたので、そのあとで
+    // 画素を読む --show-bands / --auto-lines が解放済みを触っていた（出力が 1 行も出ず、
+    // 終了コードだけ 0 に見える壊れ方。--crop を付けたときだけ動くので気付きにくい）。
+    cropped.assign(px, px + (size_t)w * h * 3);
+    stbi_image_free(px);
+    px = cropped.data();
   }
   // 試して**やめた**こと: 推論の前にコントラストを伸ばして白紙・黒字に寄せる。
   // 実写の紙 225 / 字 60 は学習データの範囲（紙 215..255 / 字 20..90）に既に入っていて、
@@ -641,12 +652,10 @@ static int cmd_photo(int argc, char** argv) {
   onx::Graph g = onx::load_onnx(model_p);
   if (g.nodes.empty()) {
     printf("cannot read %s\n", model_p.c_str());
-    if (cropped.empty()) stbi_image_free(px);
     return 1;
   }
   // e2e と WASM と同じ 1 本を通す（pure/pipeline.hpp）
   const pipeln::Detected det = pipeln::detect_syms(g, px, w, h, imgsz, conf, nms, fmt);
-  if (cropped.empty()) stbi_image_free(px);      // 切り出し時は cropped の持ち物なので触らない
   const std::vector<pl::Sym>& syms = det.syms;
   printf("%zu 記号を検出\n", syms.size());
   if (show_syms) {
@@ -709,20 +718,50 @@ static int cmd_photo(int argc, char** argv) {
       printf("  %zu: y %d..%d（高さ %d）\n", i + 1, bs[i].first, bs[i].second,
              bs[i].second - bs[i].first);
   }
+  if (has_flag(argc, argv, "--auto-cells")) {
+    // **2 段で読む**（行の帯で位置を取り、塊ごとに元画像から読み直す）。ページや欄を
+    // まるごと渡しても 1 問ずつの精度が出るのが狙い
+    const std::vector<pipeln::Cell> cs =
+        pipeln::detect_by_cells(g, px, w, h, imgsz, conf, nms, fmt);
+    printf("%zu 塊（2 段で検出）\n", cs.size());
+    for (const pipeln::Cell& c : cs) {
+      const pl::Result cr = pl::parse(c.syms);
+      if (cr.ok && ex::is_num(cr.e)) continue;              // 問題番号は出さない
+      if (!cr.ok && c.syms.size() < 3) continue;
+      printf("--- (%d,%d)-(%d,%d)  %zu 記号 ---\n", c.x0, c.y0, c.x1, c.y1, c.syms.size());
+      if (show_syms) {
+        std::vector<pl::Sym> sorted2 = c.syms;
+        std::sort(sorted2.begin(), sorted2.end(), pl::by_x);
+        for (const pl::Sym& sm : sorted2)
+          printf("  %-5s (%d,%d)-(%d,%d)\n", sm.cls.c_str(), sm.x0, sm.y0, sm.x1, sm.y1);
+      }
+      show_one(cr, "  ", &c.syms);
+    }
+    return 0;
+  }
   if (has_flag(argc, argv, "--auto-lines")) {
     // **インクの射影で行に切ってから、行ごとに検出する**（広く囲んでも字が縮まない）
     const std::vector<std::vector<pl::Sym>> ls =
         pipeln::detect_by_lines(g, px, w, h, imgsz, conf, nms, fmt);
     printf("%zu 行（行ごとに検出）\n", ls.size());
     for (size_t i = 0; i < ls.size(); ++i) {
-      printf("--- %zu 行目（%zu 記号）---\n", i + 1, ls[i].size());
-      if (show_syms) {
-        std::vector<pl::Sym> sorted2 = ls[i];
-        std::sort(sorted2.begin(), sorted2.end(), pl::by_x);
-        for (const pl::Sym& sm : sorted2)
-          printf("  %-5s (%d,%d)-(%d,%d)\n", sm.cls.c_str(), sm.x0, sm.y0, sm.x1, sm.y1);
+      // **1 行の中を横の隙間で区切る。** 教科書の 1 行には問題番号と 2 問が並ぶので、
+      // まとめて 1 式として読ませても壊れるだけ（実測: 「演算子の両側が空です」）
+      const std::vector<std::vector<pl::Sym>> cells = pl::split_cells(ls[i]);
+      printf("--- %zu 行目（%zu 記号、%zu 塊）---\n", i + 1, ls[i].size(), cells.size());
+      for (const std::vector<pl::Sym>& cell : cells) {
+        const pl::Result cr = pl::parse(cell);
+        // 問題番号（「(1)」など、ただの数になる塊）は出さない
+        if (cr.ok && ex::is_num(cr.e)) continue;
+        if (!cr.ok && cell.size() < 3) continue;
+        if (show_syms) {
+          std::vector<pl::Sym> sorted2 = cell;
+          std::sort(sorted2.begin(), sorted2.end(), pl::by_x);
+          for (const pl::Sym& sm : sorted2)
+            printf("  %-5s (%d,%d)-(%d,%d)\n", sm.cls.c_str(), sm.x0, sm.y0, sm.x1, sm.y1);
+        }
+        show_one(cr, "  ", &cell);
       }
-      show_one(pl::parse(ls[i]), "", &ls[i]);
     }
     return 0;
   }

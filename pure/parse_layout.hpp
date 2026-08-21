@@ -609,6 +609,39 @@ inline std::vector<std::vector<Sym>> split_lines(const std::vector<Sym>& in) {
   return out;
 }
 
+// 1 行を**横の隙間**で区切る（段組みと問題番号を分けるため）。
+//
+// 教科書の 1 行には「(1)  3x^2 - 5 = 4      (2)  x^2 - 6x + 5 = 0」のように**2 問と番号**が
+// 並ぶ。まとめて 1 式として読ませると当然壊れる（実測: 「演算子の両側が空です」）。
+// 式の中の隙間（字の間）と、問題の間の隙間は**大きさが桁違い**なので、字の高さを尺度にして
+// 切る。番号の「(1)」もこれで独立した塊になり、式の側は綺麗に残る。
+//
+// 尺度は**字の高さの中央値**にする（幅は数字と分数で大きく違うが、高さは揃っている）。
+inline std::vector<std::vector<Sym>> split_cells(const std::vector<Sym>& in,
+                                                double gap_factor = 1.2) {
+  std::vector<std::vector<Sym>> out;
+  if (in.empty()) return out;
+  std::vector<Sym> s = in;
+  std::sort(s.begin(), s.end(), by_x);
+  std::vector<int> hs;
+  for (const Sym& t : s) hs.push_back(t.h());
+  std::sort(hs.begin(), hs.end());
+  const int med_h = std::max(1, hs[hs.size() / 2]);
+  const int gap = (int)(med_h * gap_factor);
+  std::vector<Sym> cur{s[0]};
+  int right = s[0].x1;
+  for (size_t i = 1; i < s.size(); ++i) {
+    if (s[i].x0 - right > gap) {
+      out.push_back(cur);
+      cur.clear();
+    }
+    cur.push_back(s[i]);
+    right = std::max(right, s[i].x1);
+  }
+  if (!cur.empty()) out.push_back(cur);
+  return out;
+}
+
 // 行ごとに解析する。**1 行も読めなくても空を返すだけ**（呼ぶ側が「読めなかった」を出す）
 inline std::vector<Result> parse_lines(const std::vector<Sym>& in) {
   std::vector<Result> out;

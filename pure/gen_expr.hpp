@@ -20,6 +20,13 @@ inline long long pick(Rng& r, long long lo, long long hi) {
   return lo + (long long)r.below((uint64_t)(hi - lo + 1));
 }
 
+// 変数に使う文字。**クラス表にある文字を全部出す**（x, y, t だけだと a・b・p が学習データに
+// ほとんど出ず、実写で a が x、b と p が t に化けた）。x を少し厚くするのは教科書がそうだから。
+// 26 個ちょうどにしてある（`r.below(26)` の 1 回で引くため。数を変えると式列が変わる）。
+inline const char* const kVars[26] = {"x", "x", "x", "x", "y", "y", "y", "t", "t",
+                                      "a", "a", "b", "b", "c", "c", "p", "p",
+                                      "q", "r", "s", "n", "e", "g", "i", "o", "l"};
+
 // ---------------------------------------------------------------- 小学校の計算
 //
 // 教科書の書き方（× ÷ を字で書く、小数点、帯分数、中括弧）で 1 行を作る。
@@ -62,9 +69,19 @@ inline std::string arith(Rng& r) {
     return "frac(" + std::to_string(an) + "," + std::to_string(ad) + ") \xc3\xb7 frac(" +
            std::to_string(bn) + "," + std::to_string(bd) + ")";
   }
-  // 大きい数の掛け算・引き算（103 × 12 - 36 のような形）
-  const long long a = pick(r, 11, 199), b = pick(r, 2, 24), c = pick(r, 2, 99);
-  return std::to_string(a) + " \xc3\x97 " + std::to_string(b) + " - " + std::to_string(c);
+  if (kind < 92) {                                   // 大きい数の掛け算・引き算（103 × 12 - 36）
+    const long long a = pick(r, 11, 199), b = pick(r, 2, 24), c = pick(r, 2, 99);
+    return std::to_string(a) + " \xc3\x97 " + std::to_string(b) + " - " + std::to_string(c);
+  }
+  // **文字と × ÷ を同じ絵に出す形。** これが無いと、検出器は「文字が出る絵」と
+  // 「× が出る絵」を別々に見ることになり、x と × を見分ける必要がない
+  // （実測: 実写で × が x と読まれた。出荷中のモデルは × のクラスすら持っていない）。
+  const std::string v = kVars[r.below(26)];
+  const long long a = pick(r, 2, 12), b = pick(r, 2, 9);
+  const uint64_t f = r.below(3);
+  if (f == 0) return std::to_string(a) + " \xc3\x97 " + v + " + " + std::to_string(b);
+  if (f == 1) return v + " \xc3\x97 " + std::to_string(a) + " - " + std::to_string(b);
+  return std::to_string(a) + " \xc3\x97 " + v + " \xc3\xb7 " + std::to_string(b);
 }
 
 // 値（数・変数・分数）
@@ -104,9 +121,6 @@ inline std::string one(Rng& r) {
   // **クラス表にある文字を全部出す。** x, y, t だけで作っていたら、a・b・p などは
   // 学習データに 1 度も出ず、実写で `a` が `x`、`b` と `p` が `t` に化けた（実測）。
   // 重みは実物に近づける（x と y が多く、a・b がそれに次ぐ）。
-  static const char* kVars[] = {"x", "x", "x", "x", "x", "x", "y", "y", "y", "t", "t",
-                                "a", "a", "b", "b", "c", "n", "p", "q", "r",
-                                "s", "e", "g", "i", "o", "l"};
   const std::string var = kVars[r.below(26)];
   const uint64_t kind = r.below(100);
   if (kind < 35) {                                  // 式だけ（計算問題）
