@@ -874,6 +874,37 @@ def collect_syms(e, out=None):
     return out
 
 
+def to_decimal(r):
+    """有理数を小数で書く（**割り切れるときだけ**）。割り切れなければ空文字。
+
+    小学校の計算は答えを小数で書くので `261/10` ではなく `26.1` も見せたい。
+    循環小数を勝手に丸めると嘘になるので、10 の冪で割り切れる場合に限る。
+    """
+    d, digits = r.d, 0
+    while d % 2 == 0 and digits < 12:
+        d //= 2
+        digits += 1
+    while d % 5 == 0 and digits < 12:
+        d //= 5
+        digits += 1
+    if d != 1:
+        return ""                                   # 3 や 7 が残る = 割り切れない
+    den, k = 1, 0
+    while den % r.d != 0 and k < 12:
+        den *= 10
+        k += 1
+    if den % r.d != 0:
+        return ""
+    scaled = r.n * (den // r.d)
+    neg = scaled < 0
+    t = str(-scaled if neg else scaled)
+    if k > 0:
+        t = t.rjust(k + 1, "0")
+        t = t[:-k] + "." + t[-k:]
+        t = t.rstrip("0").rstrip(".")
+    return ("-" if neg else "") + t
+
+
 def subst(e, var, val):
     """変数を式で置き換える（代入法・連立の後半・将来の微分の合成に使う）。"""
     if e.k == SYM:
@@ -921,6 +952,11 @@ def main():
     if not a.no_expand:
         e = expand(e)
     print(to_infix(e))
+    # 割り切れる分数は小数でも見せる（小学校の計算は小数で答える）。C++ 側と同じ順序で出す
+    if is_num(e) and not e.num.is_int():
+        dec = to_decimal(e.num)
+        if dec:
+            print("小数: %s" % dec)
     if a.latex:
         print("latex: %s" % to_latex(e))
     if a.approx and e.k != NUM:

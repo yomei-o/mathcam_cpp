@@ -899,6 +899,30 @@ inline void collect_syms(const E& e, std::vector<std::string>& out) {
   for (const E& c : e->kids) collect_syms(c, out);
 }
 
+// 有理数を小数で書く（**割り切れるときだけ**）。割り切れないときは空文字を返す。
+// 小学校の計算は答えを小数で書くので、`261/10` ではなく `26.1` も見せたい。
+// 循環小数を勝手に丸めると嘘になるので、10 の冪で割り切れる場合に限る。
+inline std::string to_decimal(const Rat& r) {
+  long long d = r.d;
+  int digits = 0;
+  while (d % 2 == 0 && digits < 12) { d /= 2; ++digits; }
+  while (d % 5 == 0 && digits < 12) { d /= 5; ++digits; }
+  if (d != 1) return "";                             // 3 や 7 が残る = 割り切れない
+  long long den = 1, k = 0;
+  while (den % r.d != 0 && k < 12) { den *= 10; ++k; }
+  if (den % r.d != 0) return "";
+  const long long scaled = r.n * (den / r.d);        // 小数点を右に k 桁ずらした整数
+  const bool neg = scaled < 0;
+  std::string s = std::to_string(neg ? -scaled : scaled);
+  if (k > 0) {
+    while ((long long)s.size() <= k) s.insert(s.begin(), '0');
+    s.insert(s.end() - k, '.');
+    while (!s.empty() && s.back() == '0') s.pop_back();
+    if (!s.empty() && s.back() == '.') s.pop_back();
+  }
+  return (neg ? "-" : "") + s;
+}
+
 // 変数を式で置き換える（代入法、連立の後半、将来の微分の合成に使う）。
 // 置き換えた後は simp を通すので、結果は正規形。
 inline E subst(const E& e, const std::string& var, const E& val) {

@@ -97,6 +97,11 @@ def py_eval(src, latex=False, no_expand=False):
     if not no_expand:
         e = X.expand(e)
     out = [X.to_infix(e)]
+    # 割り切れる分数の小数表示（C++ の cmd_eval と同じ順序・同じ文言）
+    if X.is_num(e) and not e.num.is_int():
+        dec = X.to_decimal(e.num)
+        if dec:
+            out.append("小数: %s" % dec)
     if latex:
         out.append("latex: %s" % X.to_latex(e))
     return out

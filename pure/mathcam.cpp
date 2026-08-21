@@ -89,6 +89,11 @@ static int cmd_eval(int argc, char** argv) {
   // 場面（因数分解の手順表示）では expand を呼ばない。
   if (!has_flag(argc, argv, "--no-expand")) e = ex::expand(e);
   printf("%s\n", ex::to_infix(e).c_str());
+  // 割り切れる分数は小数でも見せる（小学校の計算は小数で答える）
+  if (ex::is_num(e) && !e->num.is_int()) {
+    const std::string dec = ex::to_decimal(e->num);
+    if (!dec.empty()) printf("小数: %s\n", dec.c_str());
+  }
   if (latex) printf("latex: %s\n", ex::to_latex(e).c_str());
   if (approx && !(e->k == ex::Kind::Num)) printf("approx: %.10g\n", ex::approx(e));
   return 0;

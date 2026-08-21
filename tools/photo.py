@@ -27,12 +27,13 @@ import parse_layout as PL     # noqa: E402
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-# クラスの並びは pure/classes.hpp が唯一の正。ここは写しで、ずれると症状は
-# 「たまに変な式になる」だけになるので、数を突き合わせて使う
+# クラスの並びは pure/classes.hpp が唯一の正。ここは写しなので、**モデルの出力数と
+# 突き合わせて確かめる**（ずれると症状は「たまに変な式になる」だけで原因に辿り着けない）
 CLASSES = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
            "+", "-", "=", "(", ")", "sqrt", "frac",
            "x", "y", "t", "a", "b", "c", "n",
-           "s", "i", "o", "l", "e", "g", "p", "q", "r", "t2"]
+           "s", "i", "o", "l", "e", "g", "p", "q", "r", "t2",
+           "times", "div", "dot", "brace_l", "brace_r"]
 
 
 def letterbox(img, imgsz):
@@ -94,6 +95,9 @@ def detect_syms(sess, img, imgsz=640, conf=0.25, nms=0.45):
     raw = sess.run(None, {sess.get_inputs()[0].name: x})[0]      # (1, 4+nc, N)
     a = raw[0]
     nc = a.shape[0] - 4
+    if nc > len(CLASSES):
+        raise SystemExit("モデルは %d クラスだが CLASSES は %d 個しかない（classes.hpp と揃える）"
+                         % (nc, len(CLASSES)))
     cx, cy, ww, hh = a[0], a[1], a[2], a[3]
     scores = a[4:4 + nc]
     cls = np.argmax(scores, axis=0)
@@ -179,6 +183,10 @@ def main():
     if not sol.ok:
         v = X.expand(e)
         print("答え: %s" % X.to_infix(v))
+        if X.is_num(v) and not v.num.is_int():
+            dec = X.to_decimal(v.num)
+            if dec:
+                print("小数: %s" % dec)
         return 0
     if a.steps:
         for i, st in enumerate(sol.steps, 1):
