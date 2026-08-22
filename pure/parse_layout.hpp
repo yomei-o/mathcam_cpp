@@ -564,6 +564,38 @@ inline void fix_parens(std::vector<Sym>& v) {
 // ことがあり、`3.7 × (2 - 0.4) + 0.96 ÷ 1.2 = □` の右辺に 1 個だけ残って解析が落ちた
 // （実測: 「解釈できない記号: div」）。合成データには末尾の演算子が出ないので、ここは実写専用。
 // 先頭の `-` は単項マイナスなので残す。
+// **相手のいない括弧を端から落とす。** 実写では紙の端や印がもう 1 つの括弧として拾われる
+// （実測: `(x - 2)^2 + 3(x - 1)` の後ろに中括弧の右が 1 つ入って解析が落ちた）。
+// 落とすのは**端にあって数が合わないものだけ**（中に入っているものは構造なので触らない）。
+inline void drop_unmatched_brackets(std::vector<Sym>& v) {
+  for (int pass = 0; pass < 2; ++pass) {
+    const char* lname = pass == 0 ? "(" : "brace_l";
+    const char* rname = pass == 0 ? ")" : "brace_r";
+    int open = 0, close = 0;
+    for (const Sym& s : v) {
+      if (s.atom) continue;
+      if (s.cls == lname) ++open;
+      else if (s.cls == rname) ++close;
+    }
+    while (close > open && !v.empty()) {           // 末尾の余った閉じを落とす
+      size_t last = v.size();
+      for (size_t i = v.size(); i-- > 0;)
+        if (!v[i].atom && v[i].cls == rname) { last = i; break; }
+      if (last == v.size()) break;
+      v.erase(v.begin() + (long)last);
+      --close;
+    }
+    while (open > close && !v.empty()) {           // 先頭の余った開きを落とす
+      size_t first = v.size();
+      for (size_t i = 0; i < v.size(); ++i)
+        if (!v[i].atom && v[i].cls == lname) { first = i; break; }
+      if (first == v.size()) break;
+      v.erase(v.begin() + (long)first);
+      --open;
+    }
+  }
+}
+
 inline void strip_dangling(std::vector<Sym>& v) {
   const auto binary_only = [](const std::string& c) {
     return c == "+" || c == "times" || c == "div" || c == "dot";
@@ -585,8 +617,9 @@ inline ex::E parse_flat(std::vector<Sym> v, std::string* why) {
   std::sort(v.begin(), v.end(), by_x);
   // 0.5) 背が高くて細い数字は括弧（形では迷うが、大きさの比では迷わない）
   fix_parens(v);
-  // 0.6) 相手のいない演算子を落とす（答え欄の四角が演算子として出ることがある）
+  // 0.6) 相手のいない演算子と括弧を落とす（答え欄の四角や紙の端が記号として出ることがある）
   strip_dangling(v);
+  drop_unmatched_brackets(v);
   if (v.empty()) { *why = "記号がありません"; return num(Rat(0)); }
 
   // 1) 構造を全部畳む（外側から内側へ）

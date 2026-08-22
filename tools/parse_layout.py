@@ -506,6 +506,30 @@ def fix_parens(v):
     return v
 
 
+def drop_unmatched_brackets(v):
+    """**相手のいない括弧を端から落とす**（C++ の drop_unmatched_brackets と同じ規則）。
+
+    実写では紙の端や印がもう 1 つの括弧として拾われる（実測: `(x - 2)^2 + 3(x - 1)` の後ろに
+    中括弧の右が 1 つ入って解析が落ちた）。落とすのは端にあって数が合わないものだけ。
+    """
+    for lname, rname in (("(", ")"), ("brace_l", "brace_r")):
+        opens = sum(1 for s in v if (not s.atom) and s.cls == lname)
+        closes = sum(1 for s in v if (not s.atom) and s.cls == rname)
+        while closes > opens:
+            idx = [i for i, s in enumerate(v) if (not s.atom) and s.cls == rname]
+            if not idx:
+                break
+            v.pop(idx[-1])
+            closes -= 1
+        while opens > closes:
+            idx = [i for i, s in enumerate(v) if (not s.atom) and s.cls == lname]
+            if not idx:
+                break
+            v.pop(idx[0])
+            opens -= 1
+    return v
+
+
 def strip_dangling(v):
     """**相手のいない演算子は落とす**（C++ の strip_dangling と同じ規則）。
 
@@ -532,6 +556,7 @@ def parse_flat(v_in):
     v = fix_parens(v)
     # 0.6) 相手のいない演算子を落とす（答え欄の四角が演算子として出ることがある）
     v = strip_dangling(v)
+    v = drop_unmatched_brackets(v)
     if not v:
         raise Fail("記号がありません")
 
