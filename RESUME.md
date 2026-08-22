@@ -52,6 +52,27 @@ round 7 の順番待ち。
 | 小学校の計算 | `× ÷` 小数点・帯分数・中括弧を読む。組版は**テキストから直に**（`ts::present_arith`。CAS の木は `0.96 ÷ 1.2` を `4/5` に畳んでしまう）。`selftest --arith` で 300/300。検出器は 39 クラスで学習中 |
 | 小学校の手順 | 「かっこの中を計算 → かけ算・わり算 → たし算・ひき算」、帯分数は「仮分数に直す」から。**畳まない木**（`pure/arith.hpp` / `tools/arith.py`）を内側から 1 手ずつ畳む。両言語で手順の全行が一致（`tools/parity/arith.py` 132 件） |
 
+## 対等性の棚卸し（2026-08-22 に実際に走らせて確かめた）
+
+| 機能 | C++ | Python | 縛り（実測） |
+|---|---|---|---|
+| 式の解析・正規形・印字 | `mathcam eval` | `tools/expr.py` | `parity/expr` 348 件 不一致 0 |
+| 解く + 手順 | `mathcam solve` | `tools/solve.py` | `parity/solve` 252 件 不一致 0 |
+| 小学校の手順 | `mathcam solve --steps` | `tools/arith.py` | `parity/arith` 212 件 不一致 0 |
+| 組版 + 正解枠 | `mathcam render` | `tools/typeset.py` | `parity/typeset` 218 件 不一致 0（往復不変も） |
+| データセット生成 | `mathcam dataset` | `tools/dataset.py` | `parity/dataset` 完全一致（枠は 1px も違わない） |
+| レイアウト解析 | `mathcam parse` | `tools/parse_layout.py` | `parity/layout` 200 件 不一致 0 |
+| 写真 1 枚 端から端まで | `mathcam photo` | `tools/photo.py` | `parity/photo` 20 枚 式・枠とも一致。実写の写真でも手順の全行が一致 |
+| 推論ランタイム | 自作（`pure/onnx_run.hpp`） | onnxruntime | 上の photo パリティで縛る（実装を合わせるのが目的ではない） |
+| **検出器の学習** | **無い** | `tools/train_det.py`（Ultralytics） | **ここだけ非対称**（下記） |
+| ブラウザのデモ | ✅（WASM） | — | 性質上 C++ だけ |
+
+**唯一の穴: 検出器を C++ で学習できない。** `pure/` には姉妹リポから移した学習の道具
+（`autograd.hpp` `optim.hpp` `onnx_train.hpp` `trainrt.hpp` `ops2d.hpp`）が全部あるのに、
+`mathcam` の CLI に `train` が無い。姉妹リポ（yolov8_cpp / yolo_lpr_cpp）は**同じ道具で
+YOLO を C++ で学習している**ので、できないのではなく**まだ配線していない**だけ。
+残っている作業として上に足した。
+
 ## いま止まっている所（2026-08-22 朝）
 
 **Kaggle のセッションが落ちた**（kbridge が 500 を返す = 遠隔側に届かない）。GPU が要る作業は
