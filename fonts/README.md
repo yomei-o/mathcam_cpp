@@ -43,3 +43,8 @@ python tools/make_mix.py --out data9
   書体を足すときは必ずこれを通す（字が無いと、その記号だけ枠のない学習データができる）。
 * STIX Two Math と CMU Serif Math は Julia の artifacts にライセンス文が同梱されていなかった
   ので**入れていない**（再配布のため）。必要なら各自で置けば `make_mix.py` の候補に足せる。
+* **OTF（CFF 輪郭）でも両言語で同じ枠になる。** 最初は Python 側が `glyf` しか読んでおらず、
+  CFF の書体では枠が全部 0 で C++ と 67/78 食い違っていた（数式書体を入れて初めて出た穴）。
+  `fontTools` の `ControlBoundsPen` に切り替えたら **0 件不一致**になった（stb_truetype も
+  CFF では制御点の範囲で枠を出すので、そこが一致する）。TTF / OTF どちらでも
+  `tools/parity/typeset.py --font <その書体>` で確かめられる。

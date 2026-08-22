@@ -333,6 +333,10 @@ class Font:
         self.cmap = self.tt.getBestCmap()
         self.hmtx = self.tt["hmtx"]
         self.glyf = self.tt["glyf"] if "glyf" in self.tt else None
+        # **OTF（CFF 輪郭）は glyf を持たない。** ここを見ていなかったので、CFF の書体では
+        # 枠が全部 0 になり、C++ と 67/78 も食い違っていた（数式書体を入れて初めて出た）。
+        # stb_truetype は CFF でも**制御点の範囲**で枠を出すので、こちらもそれに合わせる。
+        self.gset = None if self.glyf is not None else self.tt.getGlyphSet()
         self._cache = {}
 
     def _name(self, cp):
@@ -352,6 +356,13 @@ class Font:
             g = self.glyf[n]
             if g.numberOfContours != 0:
                 r = (g.xMin, g.yMin, g.xMax, g.yMax)
+        elif n and self.gset is not None:
+            from fontTools.pens.boundsPen import ControlBoundsPen
+            pen = ControlBoundsPen(self.gset)
+            self.gset[n].draw(pen)
+            if pen.bounds is not None:
+                x0, y0, x1, y1 = pen.bounds
+                r = (int(x0), int(y0), int(x1), int(y1))
         self._cache[cp] = r
         return r
 
