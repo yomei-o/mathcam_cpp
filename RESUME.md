@@ -162,7 +162,23 @@ GPU が戻ったらやること（この順）:
 6. 22/27 を超えたら `python scratch/ship_model.py --from models/cand_..._epoch3.onnx
    --name sym_det_v5.onnx` → emcc → node の検査 → 実写 → push。
 
-## 次の一手（優先順）
+## 次の一手（2026-08-22 夕の時点。上から順に）
+
+1. **round 9（data10）の重みを実写で測って、29/32 を超えたら出荷する**。
+   data10 = 劣化 + 文字の重み + `× と文字` + 数式書体 + **縦棒だけの 1（35%）**。
+   残る 3 件の失敗のうち 2 件が「縦棒の 1」なので、ここが的。
+   `python scratch/pick_checkpoint.py --run runs10/sym10 --only epoch0`（3, 6, 9 も）
+   → 超えたら `python scratch/ship_model.py --from models/cand_runs10_sym10_epochN.onnx
+   --name sym_det_v5.onnx` → emcc → node → 実写 → push。
+2. **検出器を C++ でも学習できるようにする**（対等性の唯一の穴。下の棚卸しの表）。
+   道具は `pure/` に全部ある（`onnx_train.hpp` `trainrt.hpp` `ops2d.hpp` `optim.hpp`）。
+   姉妹リポ（yolov8_cpp / yolo_lpr_cpp）が同じ道具で YOLO を学習しているので、**配線**の作業。
+3. **ページ渡しを上げる**（いまは 18/32。囲めば 29/32）。小学校のページが 0 なのは、
+   答え欄の四角が問題どうしの隙間を埋めて 1 行が 1 塊になるため。四角を「区切り」として
+   扱えるかを測るのが次。却下した案（刻む・谷の下限・横余白）は下の表にある。
+4. 微分・積分（`pure/solve.hpp` を伸ばす）。手書き（CROHME）。
+
+## 済んだこと（記録）
 
 1. ~~**Python 側を書いて、パリティで縛る**~~ → **完了（2026-08-21）**。
    `tools/expr.py` が `pure/expr.hpp` の鏡で、`tools/parity/expr.py` が縛る:
@@ -191,8 +207,11 @@ GPU が戻ったらやること（この順）:
      `tools/parity/dataset.py` が 60 件のデータセット（式・px・全ラベル）で一致。
    * **絵の画素は一致させない**（C++ は stb、Python は FreeType）。一致させるには片方の
      ラスタライザを移植することになり、得られるのは「同じ絵」だけ。パリティは枠に対して取る。
-   * フォントは**リポジトリに入れない**（再配布の可否が font ごとに違う）。`--font` で渡すか、
-     よくある場所（Windows の times.ttf、Linux の DejaVu）を自動で探す。
+   * ~~フォントはリポジトリに入れない~~ → **入れた（2026-08-22）**。数式書体（KaTeX Math
+     Italic・cmmi10・NewCM・TeX Gyre）を `fonts/` に置き、ライセンス文も同梱した。
+     実写の変数は数式用のイタリックで、本文用とは字が違う。**どこでも同じ学習データが
+     作れる**ことのほうが大事だと判断した（`fonts/README.md`）。
+     OTF（CFF）でも両言語で枠が一致する（Python 側は `ControlBoundsPen`）。
 4. ~~**記号検出器**~~ → **完了（2026-08-21、Kaggle T4）**。`tools/train_det.py`。
    合成 20,000 枚（`mathcam dataset --n 20000`、外部データセット不要）で YOLOv8n を 40 epoch。
    **mAP50 0.9939 / mAP50-95 0.876**、export は **NMS なし**（自作ランタイムが読める形）。
