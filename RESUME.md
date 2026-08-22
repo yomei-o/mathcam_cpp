@@ -87,8 +87,8 @@ round 7 の順番待ち。
 | モデル | 実写 32 問 |
 |---|---|
 | **`models/sym_det_v4.onnx`（round 6 epoch 3、出荷中）** | **29 / 32** |
-| round 7（data8）epoch 6 | 28 / 32 |
-| round 8（data9、数式書体）epoch 0 | 27 / 32 |
+| round 7（data8: 文字の重み + × と文字）epoch 6 | 28 / 32 |
+| round 8（data9: 数式書体）epoch 0 / 12 / 15 | 27 / 27 / 26 |
 
 残る 3 件はどれも**検出が落ちている**もの（`(5b - a)` の a、`1 2/9` の 1、`103 × 12` の 1）。
 うち 2 件が「縦棒だけの 1」なので、round 9（plain_one）が的を射ている。
