@@ -52,6 +52,29 @@ round 7 の順番待ち。
 | 小学校の計算 | `× ÷` 小数点・帯分数・中括弧を読む。組版は**テキストから直に**（`ts::present_arith`。CAS の木は `0.96 ÷ 1.2` を `4/5` に畳んでしまう）。`selftest --arith` で 300/300。検出器は 39 クラスで学習中 |
 | 小学校の手順 | 「かっこの中を計算 → かけ算・わり算 → たし算・ひき算」、帯分数は「仮分数に直す」から。**畳まない木**（`pure/arith.hpp` / `tools/arith.py`）を内側から 1 手ずつ畳む。両言語で手順の全行が一致（`tools/parity/arith.py` 132 件） |
 
+## 数式書体を入れた（2026-08-22 昼）
+
+**学習データの変数は本文用のイタリックで描いていた**（Liberation Italic、Lato Italic）。
+実写の教科書は**数式用のイタリック**で、字が違う。指摘を受けて数式書体を探し、
+リポジトリに入れた（`fonts/`、3.8MB、ライセンス文つき。詳細は `fonts/README.md`）:
+
+* KaTeX Main + **KaTeX Math Italic**（Web の数式表示で使われているもの。MIT）
+* Computer Modern cmr10/cmb10 + **cmmi10/cmmib10**（TeX の数式斜体）
+* New Computer Modern Regular/Italic + **NewCMMath**（GUST）
+* TeX Gyre Pagella Regular/Italic/**Math**（Palatino 系）、TeX Gyre Heros（サンセリフ）
+
+これで `tools/make_mix.py` の 13 組のうち 9 組が数式書体になり、**どこでも同じ学習データが
+作れる**（Kaggle の julia/R のディレクトリに依存しない）。
+
+副産物として穴が 2 つ出た:
+
+1. **OTF（CFF）の枠が Python 側で全部 0**（`glyf` しか読んでいなかった）。TTF では 0 件
+   不一致だったので気付けなかった。`ControlBoundsPen` にして両言語一致。
+2. **縦棒だけの `1` が学習データに 1 つも無い**。実写の教科書の 1 は旗も台も無い縦棒で、
+   手元の書体はどれも旗つき。`ts::Style::plain_one` を足した（**ラベルは 1 のまま、字だけ
+   小文字 l のグリフを借りる**。Century Gothic の 1 と同じ形。Century Gothic 自体は
+   Windows 専用で再配布できない）。`make_mix.py` は既定 35% で混ぜる。
+
 ## ラウンドの記録（実写の正解表で選ぶ）
 
 | ラウンド | データ | 変えたところ | 実写の最良 |
