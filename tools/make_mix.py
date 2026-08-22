@@ -44,7 +44,14 @@ _M = "/usr/local/lib/python3.12/dist-packages/matplotlib/mpl-data/fonts/ttf"
 _L = "/usr/share/fonts/truetype/liberation"
 _J = "/root/.julia/packages/MathTeXEngine/dUSrK/assets/fonts/Luciole-Math"
 _A = "/root/.julia/packages/Animations/OGXDY/docs/src/fonts"
+# 組は (立体, 斜体) か (立体, 斜体, 画像で持つ字のディレクトリ)。
+# **教科書体の数字**（`fonts/kyokasho`）は画像で持っている。実物の 1 は旗も台も無い縦棒で、
+# ほかのどの書体にも無い字形。書体ファイルは配れないので、必要な字だけ画像にしてある。
 FONT_CANDIDATES = [
+    # --- 教科書体の数字・四則・括弧 + 数式斜体（実物にいちばん近い組み方）
+    (_R + "/katex/KaTeX_Main-Regular.ttf", _R + "/katex/KaTeX_Math-Italic.ttf", _R + "/kyokasho"),
+    (_R + "/pagella/TeXGyrePagella-Regular.otf", _R + "/pagella/TeXGyrePagella-Italic.otf",
+     _R + "/kyokasho"),
     # --- リポジトリに入れた数式書体（どこでも同じものが使える）
     (_R + "/katex/KaTeX_Main-Regular.ttf", _R + "/katex/KaTeX_Math-Italic.ttf"),
     (_R + "/katex/KaTeX_Main-Bold.ttf", _R + "/katex/KaTeX_Math-BoldItalic.ttf"),
@@ -132,9 +139,14 @@ PAIR_LETTERS = "abcdefghijklmnopqrstuvwxyz"
 
 def find_fonts(limit):
     out = []
-    for rom, ital in FONT_CANDIDATES:
-        if os.path.exists(rom):
-            out.append((rom, ital if os.path.exists(ital) else rom))
+    for ent in FONT_CANDIDATES:
+        rom, ital = ent[0], ent[1]
+        bits = ent[2] if len(ent) > 2 else ""
+        if not os.path.exists(rom):
+            continue
+        if bits and not os.path.exists(os.path.join(bits, "metrics.txt")):
+            bits = ""
+        out.append((rom, ital if os.path.exists(ital) else rom, bits))
         if len(out) >= limit:
             break
     return out
@@ -170,8 +182,9 @@ def main():
 
     fonts = find_fonts(a.fonts)
     if a.list or not a.out:
-        for i, (rom, ital) in enumerate(fonts):
-            print("%s: %s | %s" % (PAIR_LETTERS[i], rom, ital))
+        for i, (rom, ital, bits) in enumerate(fonts):
+            print("%s: %s | %s%s" % (PAIR_LETTERS[i], rom, ital,
+                                     ("  + 画像の字 " + bits) if bits else ""))
         print("組 %d 個" % len(fonts))
         if not a.out:
             print("（--out を渡すと作る）")
@@ -185,7 +198,7 @@ def main():
         return 1
 
     total = {"train": 0, "val": 0}
-    for i, (rom, ital) in enumerate(fonts):
+    for i, (rom, ital, bits) in enumerate(fonts):
         for split, blocks in (("train", TRAIN_BLOCKS), ("val", VAL_BLOCKS)):
             for bi, (bl, cnt, photo, arith) in enumerate(blocks):
                 n = max(1, int(round(cnt * a.scale))) if a.scale < 1.0 else cnt
@@ -202,6 +215,8 @@ def main():
                        "--plain-one-pct", str(a.plain_one_pct)]
                 if photo:
                     cmd.append("--photo-like")
+                if bits:
+                    cmd += ["--font-bits", bits]
                 if arith:
                     cmd.append("--arith")
                 p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,

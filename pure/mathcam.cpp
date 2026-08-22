@@ -14,6 +14,7 @@
 #define STB_TRUETYPE_IMPLEMENTATION
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
+#include "stb_image.h"
 #include "expr.hpp"
 #include "solve.hpp"
 #include "arith.hpp"
@@ -22,7 +23,6 @@
 #include "parse_layout.hpp"
 #include "classes.hpp"
 #include "pipeline.hpp"
-#include "stb_image.h"
 #include <cstdio>
 #include <clocale>
 #include <cstring>
@@ -158,6 +158,90 @@ static int cmd_solve(int argc, char** argv) {
   return 0;
 }
 
+// 画像で持つ字（`mathcam fontdump` の出力）を重ねる。**数字と四則と括弧だけ教科書体**、
+// 変数は数式書体、という組み方ができる（教科書体のファイル自体は配れないため）。
+static bool load_bits_if_asked(int argc, char** argv, ts::Font& f) {
+  const std::string dir = arg_of(argc, argv, "--font-bits", "");
+  if (dir.empty()) return true;
+  std::string why;
+  if (!ts::load_bitmap_glyphs(f, dir, &why)) { printf("%s\n", why.c_str()); return false; }
+  return true;
+}
+
+// mathcam fontdump — **必要な字だけを画像にして書き出す**。
+//
+// 教科書体のように再配布できない書体でも、字の形だけを画像にすれば学習データを作れる
+// （書体ファイルは配らない）。小学校のページに要るのは数字・四則・括弧なので、既定はそこだけ。
+// 出したものは `--font-bits <dir>` で組版に差し込める（他の字は今までどおり TTF から）。
+static int cmd_fontdump(int argc, char** argv) {
+  const std::string fontp = arg_of(argc, argv, "--font", "");
+  const std::string out = arg_of(argc, argv, "--out", "");
+  const int px = std::atoi(arg_of(argc, argv, "--px", "192").c_str());
+  const std::string only = arg_of(argc, argv, "--chars", "");
+  if (fontp.empty() || out.empty()) {
+    printf("usage: mathcam fontdump --font path.ttf --out fonts/kyokasho [--px 192]\n"
+           "                        [--chars 0123456789+-=().]\n"
+           "  小学校の教科書に要る字（数字・四則・括弧・小数点・中括弧）を画像にする\n");
+    return 1;
+  }
+  // 既定の字。× ÷ − は ASCII に無いので符号位置で持つ
+  std::vector<int> cps;
+  if (only.empty()) {
+    for (int c = '0'; c <= '9'; ++c) cps.push_back(c);
+    const int extra[] = {'+', '-', 0x2212, '=', '(', ')', 0x00D7, 0x00F7, '.', '{', '}'};
+    for (int c : extra) cps.push_back(c);
+  } else {
+    // UTF-8 を符号位置に開く（× ÷ を渡せるように）
+    for (size_t i = 0; i < only.size();) {
+      const unsigned char c = (unsigned char)only[i];
+      int cp = c, n = 1;
+      if (c >= 0xF0) { cp = c & 0x07; n = 4; }
+      else if (c >= 0xE0) { cp = c & 0x0F; n = 3; }
+      else if (c >= 0xC0) { cp = c & 0x1F; n = 2; }
+      for (int k = 1; k < n && i + k < only.size(); ++k) cp = (cp << 6) | (only[i + k] & 0x3F);
+      cps.push_back(cp);
+      i += n;
+    }
+  }
+  ts::Font f;
+  std::string why;
+  if (!ts::load_font(f, fontp, &why)) { printf("%s\n", why.c_str()); return 1; }
+  make_dir(out);
+  std::string meta = "# mathcam fontdump（字の形だけを画像で持つ。書体ファイルは配らない）\n";
+  meta += "upem " + std::to_string(f.upem) + "\n";
+  int wrote = 0;
+  for (int cp : cps) {
+    int adv = f.advance(cp), x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+    f.bbox(cp, &x0, &y0, &x1, &y1);
+    char name[64];
+    std::snprintf(name, sizeof(name), "g_%04X.png", (unsigned)cp);
+    int w = 0, h = 0;
+    if (x1 > x0 && y1 > y0) {
+      // bbox にぴったりの大きさで焼く（読む側は bbox に合わせて伸ばすだけで済む）
+      const float sc = (float)px / (float)f.upem;
+      w = std::max(1, (int)std::ceil((x1 - x0) * sc));
+      h = std::max(1, (int)std::ceil((y1 - y0) * sc));
+      std::vector<unsigned char> bm((size_t)w * h, 0);
+      ts::rasterize_glyph(f, cp, bm.data(), w, h);
+      if (!stbi_write_png((out + "/" + name).c_str(), w, h, 1, bm.data(), w)) {
+        printf("書けません: %s/%s\n", out.c_str(), name);
+        return 1;
+      }
+    }
+    char line[256];
+    std::snprintf(line, sizeof(line), "%d %d %d %d %d %d %s %d %d\n", cp, adv, x0, y0, x1, y1,
+                  name, w, h);
+    meta += line;
+    ++wrote;
+  }
+  FILE* fp = fopen((out + "/metrics.txt").c_str(), "wb");
+  if (!fp) { printf("書けません: %s/metrics.txt\n", out.c_str()); return 1; }
+  fwrite(meta.data(), 1, meta.size(), fp);
+  fclose(fp);
+  printf("%s に %d 字を書いた（upem %d、%dpx で焼いた）\n", out.c_str(), wrote, f.upem, px);
+  return 0;
+}
+
 // mathcam render — 式を組版して画像にする。--labels で記号ごとの正解枠も書く。
 // これが認識器の学習データ生成器になる（人手のアノテーションより正確な枠が、組版の副産物
 // として得られる）。同じ組版を手順表示の描画にも使う。
@@ -184,6 +268,7 @@ static int cmd_render(int argc, char** argv) {
 
   ts::Font font, font_i;
   if (!ts::load_font(font, fontp, &why)) { printf("%s\n", why.c_str()); return 1; }
+  if (!load_bits_if_asked(argc, argv, font)) return 1;
   const bool has_i = st.italic_vars && ts::load_font(font_i, fontip, nullptr, true);
   // ÷ や帯分数は正規形で消えるので、木を経由しない道で描く
   const ts::Rendered R = arith_mode
@@ -244,6 +329,7 @@ static int cmd_dataset(int argc, char** argv) {
   std::string why;
   ts::Font font, font_i;
   if (!ts::load_font(font, fontp, &why)) { printf("%s\n", why.c_str()); return 1; }
+  if (!load_bits_if_asked(argc, argv, font)) return 1;
   const bool has_i = ital_pct > 0 && ts::load_font(font_i, fontip, nullptr, true);
   if (ital_pct > 0 && !has_i)
     printf("イタリックの書体が見つからないので立体だけで作る（--font-italic で渡す）\n");
@@ -417,6 +503,7 @@ static int cmd_selftest(int argc, char** argv) {
   std::string why;
   ts::Font font, font_i;
   if (!ts::load_font(font, fontp, &why)) { printf("%s\n", why.c_str()); return 1; }
+  if (!load_bits_if_asked(argc, argv, font)) return 1;
   const bool has_i = st.italic_vars && ts::load_font(font_i, fontip, nullptr, true);
 
   Rng rng(seed);
@@ -541,6 +628,7 @@ static int cmd_e2e(int argc, char** argv) {
   std::string why;
   ts::Font font, font_i;
   if (!ts::load_font(font, fontp, &why)) { printf("%s\n", why.c_str()); return 1; }
+  if (!load_bits_if_asked(argc, argv, font)) return 1;
   const bool has_i = st.italic_vars && ts::load_font(font_i, fontip, nullptr, true);
   const bool arith_mode = has_flag(argc, argv, "--arith");   // 小学校の計算で測る
   onx::Graph g = onx::load_onnx(model_p);
@@ -863,6 +951,7 @@ int main(int argc, char** argv) {
   if (cmd == "parse") return cmd_parse(argc, argv);
   if (cmd == "selftest") return cmd_selftest(argc, argv);
   if (cmd == "fontinfo") return cmd_fontinfo(argc, argv);
+  if (cmd == "fontdump") return cmd_fontdump(argc, argv);
   if (cmd == "photo") return cmd_photo(argc, argv);
   if (cmd == "rgba") return cmd_rgba(argc, argv);
   if (cmd == "e2e") return cmd_e2e(argc, argv);

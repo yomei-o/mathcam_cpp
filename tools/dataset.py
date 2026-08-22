@@ -57,9 +57,12 @@ def degrade(img, grad, grad_dir, noise, nseed):
 
 
 def build(out_dir, n, seed, px_min, px_max, font_path="", no_images=False,
-          font_italic="", italic_pct=50, minus2212_pct=50, one_pct=0, prefix="", photo_like=False,
+          font_italic="", italic_pct=50, minus2212_pct=50, one_pct=0, prefix="",
+          photo_like=False, font_bits="",
           arith=False):
     f = T.Font(font_path)
+    if font_bits:
+        f.load_bits(font_bits)
     fi = None
     if italic_pct > 0:
         try:
@@ -146,6 +149,8 @@ def main():
     ap.add_argument("--font-italic", dest="font_italic", default="")
     ap.add_argument("--italic-pct", dest="italic_pct", type=int, default=50)
     ap.add_argument("--minus2212-pct", dest="minus2212_pct", type=int, default=50)
+    ap.add_argument("--font-bits", dest="font_bits", default="",
+                    help="画像で持つ字のディレクトリ（mathcam fontdump の出力）")
     ap.add_argument("--plain-one-pct", dest="one_pct", type=int, default=0,
                     help="数字の 1 を縦棒だけの字で描く割合（実写の教科書の 1 はそれ）")
     ap.add_argument("--prefix", default="")
@@ -159,7 +164,7 @@ def main():
     a = ap.parse_args()
     made, skipped, f = build(a.out, a.n, a.seed, a.px_min, a.px_max, a.font, a.no_images,
                              a.font_italic, a.italic_pct, a.minus2212_pct, a.one_pct, a.prefix,
-                             a.photo_like, a.arith)
+                             a.photo_like, a.font_bits, a.arith)
     print("%s に %d 件（捨てた式 %d 件、px %d..%d、font upem %d）"
           % (a.out, made, skipped, a.px_min, a.px_max, f.upem))
     return 0

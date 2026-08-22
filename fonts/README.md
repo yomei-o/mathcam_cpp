@@ -16,6 +16,31 @@
 | `pagella/` | TeX Gyre Pagella: Regular / Italic / Math（Palatino 系） | GUST | GUST Font License（`pagella/LICENSE`） |
 | `heros/` | TeX Gyre Heros: Regular / Italic（Helvetica 系のサンセリフ） | GUST | GUST Font License（`heros/LICENSE`） |
 
+## kyokasho/ — 教科書体の字を**画像で**持っている（書体ファイルではない）
+
+実物の小学校の教科書の `1` は**旗も台も無い縦棒**で、上のどの書体にもその字形が無い
+（実測: そのせいで `103 × 12 - 36` の 1 が小文字 l と読まれ、`1 2/9` の 1 は検出すらされない）。
+Windows に入っている **UD デジタル教科書体**（Morisawa）がまさにその字形だが、
+**書体ファイルは再配布できない**。
+
+そこで `mathcam fontdump` で**必要な字だけを被覆率の画像に焼いて**置いてある（21 字、84KB）:
+数字 0-9、`+ - − = ( ) × ÷ . { }`。字の形と寸法（advance と bbox）だけで、書体ファイルでは
+ないので、これで組版すると教科書の字形の学習データが作れる。
+
+```sh
+# 作り直す（Windows で UD デジタル教科書体が入っているとき）
+./mathcam.exe fontdump --font C:/Windows/Fonts/UDDigiKyokashoN-R.ttc --out fonts/kyokasho --px 192
+
+# 使う（数字と四則と括弧だけ教科書体、変数は数式斜体）
+./mathcam.exe render --arith --expr "103 × 12 - 36" --px 56   --font fonts/katex/KaTeX_Main-Regular.ttf --font-bits fonts/kyokasho --out out.png
+```
+
+`metrics.txt` は `upem` と、字ごとの `符号位置 advance x0 y0 x1 y1 画像名 幅 高さ`。
+**両言語がこの整数をそのまま読む**ので、枠は 1px も違わない（`tools/parity/dataset.py` で確認）。
+
+注意: 教科書体は**字の幅に対して送りが広い**。桁をつなぐ隙間の上限（`T_DIGIT_GAP`）を
+40% のままにすると `111` が 3 つの数に割れる。実測して 75% にした（合成の 100% は落ちない）。
+
 ## 使い方
 
 ```sh

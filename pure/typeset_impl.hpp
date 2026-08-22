@@ -4,18 +4,32 @@
 #pragma once
 #include "stb_truetype.h"
 #include "typeset.hpp"
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 
 namespace ts {
 
+// **画像で持つ字が優先。** 寸法は書き出し元の単位なので、この書体の単位に直す
+// （両言語とも同じ整数演算で直すので、枠は 1px も違わない）。
 inline int Font::advance(int cp) const {
+  const std::map<int, BitGlyph>::const_iterator it = bits.find(cp);
+  if (bit_upem > 0 && it != bits.end())
+    return (int)((long long)it->second.adv * upem / bit_upem);
   int adv = 0, lsb = 0;
   stbtt_GetCodepointHMetrics(info, cp, &adv, &lsb);
   return adv;
 }
 
 inline void Font::bbox(int cp, int* x0, int* y0, int* x1, int* y1) const {
+  const std::map<int, BitGlyph>::const_iterator it = bits.find(cp);
+  if (bit_upem > 0 && it != bits.end()) {
+    *x0 = (int)((long long)it->second.x0 * upem / bit_upem);
+    *y0 = (int)((long long)it->second.y0 * upem / bit_upem);
+    *x1 = (int)((long long)it->second.x1 * upem / bit_upem);
+    *y1 = (int)((long long)it->second.y1 * upem / bit_upem);
+    return;
+  }
   *x0 = *y0 = *x1 = *y1 = 0;
   stbtt_GetCodepointBox(info, cp, x0, y0, x1, y1);
 }
@@ -68,9 +82,13 @@ inline bool load_font(Font& f, const std::string& path_in, std::string* why = nu
     f.upem = 0;
     {
       const unsigned char* d = f.data.data();
-      const int num = (d[4] << 8) | d[5];
+      // **.ttc は先頭が ttcf で、表の目録は先頭ではなく off から始まる。**
+      // ここを見ていなかったので、教科書体（.ttc）の upem が 1000 に落ちて、
+      // 字の寸法が 2 倍ずれていた（fontdump で気付いた）。
+      const unsigned char* base = d + (off < 0 ? 0 : off);
+      const int num = (base[4] << 8) | base[5];
       for (int i = 0; i < num; ++i) {
-        const unsigned char* rec = d + 12 + 16 * i;
+        const unsigned char* rec = base + 12 + 16 * i;
         if (memcmp(rec, "head", 4) == 0) {
           const unsigned int o = (rec[8] << 24) | (rec[9] << 16) | (rec[10] << 8) | rec[11];
           f.upem = (d[o + 18] << 8) | d[o + 19];
@@ -85,6 +103,64 @@ inline bool load_font(Font& f, const std::string& path_in, std::string* why = nu
   }
   if (why) *why = "フォントが見つかりません（--font で TTF を渡してください）";
   return false;
+}
+
+// 字を 1 つ、w x h の被覆率に焼く（bbox にぴったり収める）。`mathcam fontdump` が使う。
+inline void rasterize_glyph(const Font& f, int cp, unsigned char* out, int w, int h) {
+  std::memset(out, 0, (size_t)w * h);
+  int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+  f.bbox(cp, &x0, &y0, &x1, &y1);
+  if (x1 <= x0 || y1 <= y0 || w <= 0 || h <= 0) return;
+  // bbox がちょうど w x h になる倍率で焼く（縦横で別々に取ると字が歪むので、面で合わせる）
+  const float sx = (float)w / (float)(x1 - x0), sy = (float)h / (float)(y1 - y0);
+  stbtt_MakeCodepointBitmapSubpixel(f.info, out, w, h, w, sx, sy, 0.f, 0.f, cp);
+}
+
+// 画像で持つ字を読む（`mathcam fontdump` が書いたディレクトリ）。
+//
+// metrics.txt の書き方（**両言語がこの整数をそのまま読む**ので、枠が一致する）:
+//   upem <n>
+//   <符号位置> <advance> <x0> <y0> <x1> <y1> <画像ファイル名> <画像の幅> <画像の高さ>
+// 画像は 8bit グレースケールで、**bbox にぴったり**。値は被覆率（255 で真っ黒）。
+inline bool load_bitmap_glyphs(Font& f, const std::string& dir, std::string* why = nullptr) {
+  const std::string mp = dir + "/metrics.txt";
+  FILE* fp = fopen(mp.c_str(), "rb");
+  if (!fp) { if (why) *why = "画像の字が見つかりません: " + mp; return false; }
+  char line[512];
+  int upem = 0;
+  int loaded = 0;
+  while (fgets(line, sizeof(line), fp)) {
+    if (line[0] == '#' || line[0] == '\n' || line[0] == '\r') continue;
+    int cp = 0, adv = 0, x0 = 0, y0 = 0, x1 = 0, y1 = 0, w = 0, h = 0;
+    char name[128] = {0};
+    if (sscanf(line, "upem %d", &upem) == 1) continue;
+    if (sscanf(line, "%d %d %d %d %d %d %127s %d %d", &cp, &adv, &x0, &y0, &x1, &y1, name,
+               &w, &h) != 9)
+      continue;
+    BitGlyph g;
+    g.adv = adv; g.x0 = x0; g.y0 = y0; g.x1 = x1; g.y1 = y1; g.w = w; g.h = h;
+    if (w > 0 && h > 0) {
+      int iw = 0, ih = 0, ic = 0;
+      unsigned char* px = stbi_load((dir + "/" + name).c_str(), &iw, &ih, &ic, 1);
+      if (!px || iw != w || ih != h) {
+        if (px) stbi_image_free(px);
+        fclose(fp);
+        if (why) *why = "画像の字が読めません: " + dir + "/" + name;
+        return false;
+      }
+      g.pix.assign(px, px + (size_t)w * h);
+      stbi_image_free(px);
+    }
+    f.bits[cp] = g;
+    ++loaded;
+  }
+  fclose(fp);
+  if (upem <= 0 || loaded == 0) {
+    if (why) *why = "metrics.txt が読めません: " + mp;
+    return false;
+  }
+  f.bit_upem = upem;
+  return true;
 }
 
 // 組版して画素に落とす。返る箱は「画素・y は下向き正」で、認識器の正解枠にそのまま使える。
@@ -131,13 +207,44 @@ inline Rendered render_p(const Font& f, const Font* fi, const P& p, int px,
     const Font& g = (it.ital && fi) ? *fi : f;
     const float sc = (float)px / (float)g.upem * (float)it.scale_num / (float)it.scale_den;
     int gx0 = 0, gy0 = 0, gx1 = 0, gy1 = 0;
-    stbtt_GetCodepointBitmapBox(g.info, it.cp, sc, sc, &gx0, &gy0, &gx1, &gy1);
+    if (g.has_bit(it.cp)) {
+      // 画像で持つ字。stb と同じ丸め方で画素の箱を出す（x0,y0 は floor、x1,y1 は ceil）
+      int bx0 = 0, by0 = 0, bx1 = 0, by1 = 0;
+      g.bbox(it.cp, &bx0, &by0, &bx1, &by1);
+      gx0 = (int)std::floor(bx0 * sc);
+      gy0 = (int)std::floor(-by1 * sc);
+      gx1 = (int)std::ceil(bx1 * sc);
+      gy1 = (int)std::ceil(-by0 * sc);
+    } else {
+      stbtt_GetCodepointBitmapBox(g.info, it.cp, sc, sc, &gx0, &gy0, &gx1, &gy1);
+    }
     const int gw = gx1 - gx0, gh = gy1 - gy0;
     const int penx = to_px((long long)it.x + ox, px, f.upem);
     const int peny = to_px((long long)oy - it.y, px, f.upem);    // ベースラインの画素位置
     if (gw > 0 && gh > 0) {
       std::vector<unsigned char> bm((size_t)gw * gh, 0);
-      stbtt_MakeCodepointBitmap(g.info, bm.data(), gw, gh, gw, sc, sc, it.cp);
+      if (g.has_bit(it.cp)) {
+        // 持っている画像を目的の大きさに双線形で伸ばす（学習時と同じ拡縮の作法）
+        const BitGlyph& bg = g.bits.find(it.cp)->second;
+        for (int y = 0; y < gh; ++y)
+          for (int x = 0; x < gw; ++x) {
+            const float fx = bg.w <= 1 ? 0.f : ((float)x + 0.5f) * bg.w / gw - 0.5f;
+            const float fy = bg.h <= 1 ? 0.f : ((float)y + 0.5f) * bg.h / gh - 0.5f;
+            const int sx0 = std::max(0, std::min(bg.w - 1, (int)std::floor(fx)));
+            const int sy0 = std::max(0, std::min(bg.h - 1, (int)std::floor(fy)));
+            const int sx1 = std::min(bg.w - 1, sx0 + 1), sy1 = std::min(bg.h - 1, sy0 + 1);
+            const float tx = fx - (float)sx0, ty = fy - (float)sy0;
+            const float p00 = bg.pix[(size_t)sy0 * bg.w + sx0];
+            const float p10 = bg.pix[(size_t)sy0 * bg.w + sx1];
+            const float p01 = bg.pix[(size_t)sy1 * bg.w + sx0];
+            const float p11 = bg.pix[(size_t)sy1 * bg.w + sx1];
+            const float top = p00 + (p10 - p00) * tx, bot = p01 + (p11 - p01) * tx;
+            const float v = top + (bot - top) * ty;
+            bm[(size_t)y * gw + x] = (unsigned char)std::max(0.f, std::min(255.f, v));
+          }
+      } else {
+        stbtt_MakeCodepointBitmap(g.info, bm.data(), gw, gh, gw, sc, sc, it.cp);
+      }
       for (int y = 0; y < gh; ++y)
         for (int x = 0; x < gw; ++x) {
           const int dx = penx + gx0 + x, dy = peny + gy0 + y;

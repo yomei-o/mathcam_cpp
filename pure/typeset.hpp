@@ -18,6 +18,7 @@
 #pragma once
 #include "expr.hpp"
 #include <cstdint>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -333,10 +334,23 @@ inline P present_arith(const std::string& s, const Style& st = Style()) {
 
 // ---------------------------------------------------------------- フォント
 
+// **画像で持つ字。** 教科書体のように再配布できない書体でも、必要な字だけ被覆率の画像に
+// して持てば学習データを作れる（字の形だけを使う。書体ファイルは配らない）。
+// 小学校のページに要るのは数字・四則・括弧なので、そこだけ差し替える使い方を想定している。
+struct BitGlyph {
+  int adv = 0, x0 = 0, y0 = 0, x1 = 0, y1 = 0;   // 書き出したときのフォント単位
+  int w = 0, h = 0;                               // 画像の大きさ（bbox にぴったり）
+  std::vector<unsigned char> pix;                 // 被覆率 0..255（w*h）
+};
+
 struct Font {
   std::vector<unsigned char> data;
   stbtt_fontinfo* info = nullptr;      // .cpp 側で確保する（stb の型が不完全なので）
   int upem = 1000, ascent = 800, descent = 200;
+  // 画像で差し替える字（符号位置 -> 字）。bit_upem は書き出し元の upem
+  int bit_upem = 0;
+  std::map<int, BitGlyph> bits;
+  bool has_bit(int cp) const { return bit_upem > 0 && bits.find(cp) != bits.end(); }
   int advance(int cp) const;
   void bbox(int cp, int* x0, int* y0, int* x1, int* y1) const;
 };

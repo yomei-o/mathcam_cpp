@@ -108,6 +108,7 @@ def main():
     ap.add_argument("--seed", type=int, default=1234)
     ap.add_argument("--px", type=int, default=48)
     ap.add_argument("--font", default="")
+    ap.add_argument("--font-bits", dest="font_bits", default="")
     ap.add_argument("--exe", default="")
     ap.add_argument("--verbose", action="store_true")
     a = ap.parse_args()

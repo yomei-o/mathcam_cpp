@@ -12,6 +12,8 @@
   python tools/typeset.py --expr "1/2 x + sqrt(2) = 3/4" --out out.png --labels out.txt
 """
 import argparse
+import io
+import math
 import os
 import sys
 
@@ -342,12 +344,51 @@ class Font:
         # 枠が全部 0 になり、C++ と 67/78 も食い違っていた（数式書体を入れて初めて出た）。
         # stb_truetype は CFF でも**制御点の範囲**で枠を出すので、こちらもそれに合わせる。
         self.gset = None if self.glyf is not None else self.tt.getGlyphSet()
+        # **画像で持つ字**（`mathcam fontdump` の出力）。教科書体のように再配布できない書体でも、
+        # 必要な字だけ被覆率の画像にすれば学習データを作れる。C++ の Font::bits と同じ。
+        self.bit_upem = 0
+        self.bits = {}
         self._cache = {}
+
+    def load_bits(self, dir_path):
+        """metrics.txt と画像を読む（C++ の ts::load_bitmap_glyphs と同じ形式）。"""
+        from PIL import Image
+        mp = os.path.join(dir_path, "metrics.txt")
+        upem = 0
+        with io.open(mp, encoding="utf-8") as fp:
+            for line in fp:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if line.startswith("upem "):
+                    upem = int(line.split()[1])
+                    continue
+                t = line.split()
+                if len(t) != 9:
+                    continue
+                cp, adv, x0, y0, x1, y1, name, w, h = (int(t[0]), int(t[1]), int(t[2]), int(t[3]),
+                                                       int(t[4]), int(t[5]), t[6], int(t[7]),
+                                                       int(t[8]))
+                img = None
+                if w > 0 and h > 0:
+                    img = Image.open(os.path.join(dir_path, name)).convert("L")
+                    if img.size != (w, h):
+                        raise SystemExit("画像の大きさが metrics と違う: %s" % name)
+                self.bits[cp] = (adv, x0, y0, x1, y1, img)
+        if upem <= 0 or not self.bits:
+            raise SystemExit("metrics.txt が読めません: %s" % mp)
+        self.bit_upem = upem
+        self._cache = {}
+        return self
 
     def _name(self, cp):
         return self.cmap.get(cp)
 
     def advance(self, cp):
+        # 画像で持つ字が優先（寸法は書き出し元の単位なので、この書体の単位に直す。
+        # C++ と同じ整数演算なので枠は 1px も違わない）
+        if self.bit_upem and cp in self.bits:
+            return mulr(self.bits[cp][0], self.upem, self.bit_upem)
         n = self._name(cp)
         return self.hmtx[n][0] if n else 0
 
@@ -355,6 +396,14 @@ class Font:
         """(x0, y0, x1, y1)。空グリフは 0。stbtt_GetCodepointBox と同じ値になる。"""
         if cp in self._cache:
             return self._cache[cp]
+        if self.bit_upem and cp in self.bits:
+            # **0 方向に切り捨てる**（C++ の整数除算に合わせる。Python の // は床関数なので、
+            # 括弧のように y0 が負の字で 1px ずれる。記録済みの落とし穴の再発だった）
+            adv, x0, y0, x1, y1, _img = self.bits[cp]
+            r = (mulr(x0, self.upem, self.bit_upem), mulr(y0, self.upem, self.bit_upem),
+                 mulr(x1, self.upem, self.bit_upem), mulr(y1, self.upem, self.bit_upem))
+            self._cache[cp] = r
+            return r
         n = self._name(cp)
         r = (0, 0, 0, 0)
         if n and self.glyf is not None:
@@ -599,6 +648,20 @@ def render_p(f, p, px, fi=None, st=None):
             continue
         # イタリックの字はその書体の upem で大きさを決める（em の大きさを合わせる）
         src = fi if (ital and fi is not None) else f
+        if src.bit_upem and c in src.bits:
+            # 画像で持つ字は「その字の枠」に伸ばして貼る（C++ と同じ置き方）
+            _adv, bx0, by0, bx1, by1 = [mulr(v, src.upem, src.bit_upem) for v in src.bits[c][:5]]
+            gimg = src.bits[c][5]
+            if gimg is not None and bx1 > bx0 and by1 > by0:
+                sc = px * sn / (src.upem * sd)
+                gx0, gy0 = int(math.floor(bx0 * sc)), int(math.floor(-by1 * sc))
+                gx1, gy1 = int(math.ceil(bx1 * sc)), int(math.ceil(-by0 * sc))
+                gw, gh = max(1, gx1 - gx0), max(1, gy1 - gy0)
+                gl = gimg.resize((gw, gh), Image.BILINEAR)
+                # 被覆率で紙と字を混ぜる（C++ と同じ狙い。ラスタの一致は求めない）
+                ink = Image.new("L", (gw, gh), st.ink)
+                img.paste(ink, (a + gx0, b + gy0), gl)
+            continue
         size = max(1, round(px * sn / sd))
         key = (size, 1 if src is fi else 0)
         if key not in fonts:
