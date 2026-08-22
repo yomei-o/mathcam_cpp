@@ -163,6 +163,39 @@ inline std::vector<std::pair<int, int>> ink_bands(const unsigned char* rgb, int 
       merged.back().second = bands[i].second;
     else merged.push_back(bands[i]);
   }
+  // **背の高い帯は谷で割る。** 行送りが詰まった教科書では 2 行が 1 帯になる（実測: 帯の高さが
+  // 115/91/158/85/195/... で、中央値 84 に対して 158 と 195 は 2 行ぶん）。帯の中で
+  // インクがいちばん少ない行（真ん中あたり）を探し、そこが帯の平均の 6 割より少なければ割る。
+  {
+    std::vector<int> hs2;
+    for (const std::pair<int, int>& b : merged) hs2.push_back(b.second - b.first);
+    std::sort(hs2.begin(), hs2.end());
+    const int med2 = std::max(1, hs2[hs2.size() / 2]);
+    for (int pass = 0; pass < 3; ++pass) {
+      std::vector<std::pair<int, int>> next;
+      bool did = false;
+      for (const std::pair<int, int>& b : merged) {
+        const int bh = b.second - b.first;
+        if (bh <= med2 * 8 / 5) { next.push_back(b); continue; }
+        const int lo = b.first + bh / 5, hi = b.second - bh / 5;   // 真ん中 60% で探す
+        long long sum = 0;
+        for (int y = b.first; y < b.second; ++y) sum += ink[(size_t)y];
+        const int mean = (int)(sum / std::max(1, bh));
+        int best = -1, best_v = 0;
+        for (int y = lo; y < hi; ++y)
+          if (best < 0 || ink[(size_t)y] < best_v) { best = y; best_v = ink[(size_t)y]; }
+        if (best > 0 && best_v * 100 < mean * 60) {
+          next.push_back({b.first, best});
+          next.push_back({best, b.second});
+          did = true;
+        } else {
+          next.push_back(b);
+        }
+      }
+      merged = next;
+      if (!did) break;
+    }
+  }
   // 高さが極端に小さい帯（罫線やノイズ）は捨てる
   std::vector<std::pair<int, int>> out;
   for (const std::pair<int, int>& b : merged) {
