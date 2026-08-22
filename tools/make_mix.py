@@ -52,6 +52,8 @@ FONT_CANDIDATES = [
     (_R + "/katex/KaTeX_Main-Regular.ttf", _R + "/katex/KaTeX_Math-Italic.ttf", _R + "/kyokasho"),
     (_R + "/pagella/TeXGyrePagella-Regular.otf", _R + "/pagella/TeXGyrePagella-Italic.otf",
      _R + "/kyokasho"),
+    (_R + "/katex/KaTeX_Main-Bold.ttf", _R + "/katex/KaTeX_Math-BoldItalic.ttf",
+     _R + "/kyokasho-b"),
     # --- リポジトリに入れた数式書体（どこでも同じものが使える）
     (_R + "/katex/KaTeX_Main-Regular.ttf", _R + "/katex/KaTeX_Math-Italic.ttf"),
     (_R + "/katex/KaTeX_Main-Bold.ttf", _R + "/katex/KaTeX_Math-BoldItalic.ttf"),
