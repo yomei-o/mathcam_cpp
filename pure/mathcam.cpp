@@ -18,6 +18,7 @@
 #include "expr.hpp"
 #include "solve.hpp"
 #include "arith.hpp"
+#include "calc.hpp"
 #include "typeset_impl.hpp"
 #include "gen_expr.hpp"
 #include "parse_layout.hpp"
@@ -240,6 +241,39 @@ static int cmd_fontdump(int argc, char** argv) {
   fclose(fp);
   printf("%s に %d 字を書いた（upem %d、%dpx で焼いた）\n", out.c_str(), wrote, f.upem, px);
   return 0;
+}
+
+// mathcam diff / integ — 微分と積分。手順つきで出す（solve と同じ作法）。
+static int cmd_calc(int argc, char** argv, bool integral) {
+  const std::string src = arg_of(argc, argv, "--expr", "");
+  const std::string var = arg_of(argc, argv, "--var", "");
+  const bool steps = has_flag(argc, argv, "--steps");
+  const bool latex = has_flag(argc, argv, "--latex");
+  const std::string from = arg_of(argc, argv, "--from", "");
+  const std::string to = arg_of(argc, argv, "--to", "");
+  if (src.empty()) {
+    printf("usage: mathcam diff  --expr \"x^3 + 2x\" [--var x] [--steps] [--latex]\n"
+           "       mathcam integ --expr \"3x^2 + 1\" [--var x] [--from 0 --to 2] [--steps]\n");
+    return 1;
+  }
+  std::string why;
+  const ex::E e = ex::parse(src, &why);
+  if (!why.empty()) { printf("parse error: %s\n", why.c_str()); return 1; }
+  ex::E lo, hi;
+  if (!from.empty() && !to.empty()) {
+    lo = ex::parse(from, &why);
+    if (!why.empty()) { printf("parse error(--from): %s\n", why.c_str()); return 1; }
+    hi = ex::parse(to, &why);
+    if (!why.empty()) { printf("parse error(--to): %s\n", why.c_str()); return 1; }
+  }
+  const cal::Result r = integral ? cal::integrate(e, var, lo, hi) : cal::differentiate(e, var);
+  if (steps)
+    for (size_t i = 0; i < r.steps.size(); ++i)
+      printf("%zu. [%s] %s\n   %s\n", i + 1, r.steps[i].rule.c_str(), r.steps[i].note.c_str(),
+             (latex ? ex::to_latex(r.steps[i].after) : ex::to_infix(r.steps[i].after)).c_str());
+  for (const std::string& line : cal::answer_lines(r, latex, integral))
+    printf("%s\n", line.c_str());
+  return r.ok ? 0 : 1;
 }
 
 // mathcam render — 式を組版して画像にする。--labels で記号ごとの正解枠も書く。
@@ -945,6 +979,8 @@ int main(int argc, char** argv) {
   if (cmd == "eval") return cmd_eval(argc, argv);
   if (cmd == "rawdump") return cmd_rawdump(argc, argv);
   if (cmd == "solve") return cmd_solve(argc, argv);
+  if (cmd == "diff") return cmd_calc(argc, argv, false);
+  if (cmd == "integ") return cmd_calc(argc, argv, true);
   if (cmd == "render") return cmd_render(argc, argv);
   if (cmd == "dataset") return cmd_dataset(argc, argv);
   if (cmd == "genexpr") return cmd_genexpr(argc, argv);
