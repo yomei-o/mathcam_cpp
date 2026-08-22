@@ -727,8 +727,10 @@ static int cmd_photo(int argc, char** argv) {
     const std::vector<pipeln::Cell> cs =
         pipeln::detect_by_cells(g, px, w, h, imgsz, conf, nms, fmt, gap_pct, merge_pct);
     printf("%zu 塊（2 段で検出）\n", cs.size());
-    for (const pipeln::Cell& c : cs) {
-      const pl::Result cr = pl::parse(c.syms);
+    for (const pipeln::Cell& c0 : cs)
+     // 読めない塊は横の隙間で割って読み直す（答え欄の四角が問題の隙間を埋めるため）
+     for (const pl::Piece& c : pl::parse_or_split(c0.syms)) {
+      const pl::Result cr = c.r;
       // 問題番号（「(1)」など）は出さない。**記号の数でも縛る**（小学校の計算は値が数に
       // なるので、「数になったら番号」とだけ書くと式そのものが消える。実測: s6.png が消えた）
       if (cr.ok && ex::is_num(cr.e) && c.syms.size() <= 4) continue;

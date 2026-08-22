@@ -182,18 +182,20 @@ EMSCRIPTEN_KEEPALIVE int mc_run_lines(const unsigned char* rgba, int w, int h, i
   bool first = true;
   std::string js = "{\"mode\":\"lines\",\"lines\":[";
   for (const pipeln::Cell& c : cells) {
-    const pl::Result cr = pl::parse(c.syms);
-    // 問題番号（「(1)」など）と、記号が 2 つ以下で読めない塊は出さない。**記号の数でも
-    // 縛る**（小学校の計算は値が数になるので、数だけを条件にすると式そのものが消える）
-    if (cr.ok && ex::is_num(cr.e) && c.syms.size() <= 4) continue;
-    if (!cr.ok && c.syms.size() < 3) continue;
-    total += (int)c.syms.size();
-    js += (first ? "{" : ",{");
-    first = false;
-    js += "\"x0\":" + std::to_string(c.x0) + ",\"y0\":" + std::to_string(c.y0) +
-          ",\"x1\":" + std::to_string(c.x1) + ",\"y1\":" + std::to_string(c.y1) +
-          ",\"syms\":" + syms_json(c.syms) + ",";
-    js += one_json(cr, &c.syms) + "}";
+    // 読めない塊は横の隙間で割って読み直す（答え欄の四角が問題の隙間を埋めるため）
+    for (const pl::Piece& pc : pl::parse_or_split(c.syms)) {
+      // 問題番号（「(1)」など）と、記号が 2 つ以下で読めない塊は出さない。**記号の数でも
+      // 縛る**（小学校の計算は値が数になるので、数だけを条件にすると式そのものが消える）
+      if (pc.r.ok && ex::is_num(pc.r.e) && pc.syms.size() <= 4) continue;
+      if (!pc.r.ok && pc.syms.size() < 3) continue;
+      total += (int)pc.syms.size();
+      js += (first ? "{" : ",{");
+      first = false;
+      js += "\"x0\":" + std::to_string(pc.x0) + ",\"y0\":" + std::to_string(pc.y0) +
+            ",\"x1\":" + std::to_string(pc.x1) + ",\"y1\":" + std::to_string(pc.y1) +
+            ",\"syms\":" + syms_json(pc.syms) + ",";
+      js += one_json(pc.r, &pc.syms) + "}";
+    }
   }
   js += "],\"count\":" + std::to_string(total) + "}";
   g_result = js;

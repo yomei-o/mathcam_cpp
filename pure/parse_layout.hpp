@@ -752,6 +752,48 @@ inline std::vector<std::vector<Sym>> split_cells(const std::vector<Sym>& in,
   return out;
 }
 
+// 1 つの塊とその読み（parse_or_split が返す）
+struct Piece {
+  Result r;
+  std::vector<Sym> syms;
+  int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+};
+
+// **読めない塊は横の隙間で割って読み直す。**
+//
+// プリントは `式 = □` の形で、答え欄の四角が問題どうしの隙間を埋めてしまう。射影で切ると
+// 1 塊に 2 問（と番号）が入り、まとめて解析して落ちる（実測: 小学校のページはページ渡しで
+// 0/6）。**記号の位置はもう分かっている**ので、割り直しに検出はいらない。
+// 読めた断片だけ返す。1 つも読めなければ、元の失敗をそのまま返す（嘘を作らない）。
+inline std::vector<Piece> parse_or_split(const std::vector<Sym>& syms) {
+  const auto box = [](const std::vector<Sym>& v, Piece& p) {
+    if (v.empty()) return;
+    p.x0 = v[0].x0; p.y0 = v[0].y0; p.x1 = v[0].x1; p.y1 = v[0].y1;
+    for (const Sym& s : v) {
+      p.x0 = std::min(p.x0, s.x0); p.y0 = std::min(p.y0, s.y0);
+      p.x1 = std::max(p.x1, s.x1); p.y1 = std::max(p.y1, s.y1);
+    }
+  };
+  std::vector<Piece> out;
+  Piece whole;
+  whole.r = parse(syms);
+  whole.syms = syms;
+  box(syms, whole);
+  if (whole.r.ok) { out.push_back(whole); return out; }
+  const std::vector<std::vector<Sym>> parts = split_cells(syms);
+  if (parts.size() < 2) { out.push_back(whole); return out; }
+  for (const std::vector<Sym>& pv : parts) {
+    Piece p;
+    p.r = parse(pv);
+    if (!p.r.ok) continue;
+    p.syms = pv;
+    box(pv, p);
+    out.push_back(p);
+  }
+  if (out.empty()) out.push_back(whole);
+  return out;
+}
+
 // 行ごとに解析する。**1 行も読めなくても空を返すだけ**（呼ぶ側が「読めなかった」を出す）
 inline std::vector<Result> parse_lines(const std::vector<Sym>& in) {
   std::vector<Result> out;
