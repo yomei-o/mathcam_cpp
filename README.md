@@ -134,6 +134,9 @@ node wasm/test_node.js              # ブラウザ抜きの検査（サンプル
 * 対策は組版器側: `--italic` と `--minus 2212`、データセットは `--italic-pct` /
   `--minus2212-pct` / `--prefix`（書体を変えて同じ dir に足せる）。書体は
   cmr10 + cmmi10（TeX の Computer Modern）、STIXGeneral(+Italic)、DejaVu、Liberation を混ぜる。
+* **数式書体はリポジトリに入れた**（`fonts/`、3.8MB、ライセンス文つき）。実写の変数は
+  数式用のイタリック（KaTeX Math Italic や cmmi10）で、本文用のイタリックとは字が違う。
+  `tools/make_mix.py` がこれを最初に使うので、**どこでも同じ学習データが作れる**。
 * 実写の測り方は `tests/real_photos.txt`（正解表）と `tools/real_eval.py`。
   **写真はリポジトリに入れない**（教科書は著作物）ので、手元に置いて測る。
   囲まずに 1 枚渡す道は `tools/page_eval.py`（`photo --auto-cells` を測る。別の問い）。
@@ -229,3 +232,16 @@ python tools/parity/arith.py --n 200                            # 手順の全�
 ## ライセンス
 
 自前コードは BSD-3-Clause。`pure/` のエンジンは姉妹リポから移植（同じ作者・BSD-3-Clause）。
+
+`fonts/` に入れてある**数式書体は第三者のもの**で、それぞれのライセンスに従う
+（ライセンス文を同じディレクトリに置いてある。詳しくは [fonts/README.md](fonts/README.md)）:
+
+| 書体 | ライセンス |
+|---|---|
+| KaTeX Main / KaTeX Math Italic | MIT |
+| Computer Modern（cmr10 / cmmi10 / cmb10 / cmmib10） | `fonts/cm/LICENCE` |
+| New Computer Modern（NewCM10 / NewCMMath） | GUST Font License |
+| TeX Gyre Pagella / Heros | GUST Font License |
+
+`models/sym_det_v4.onnx` は自前の合成データだけで学習したもの（BSD-3-Clause）。
+`test_data/` の教科書の写真は**入れていない**（著作物）。

@@ -35,11 +35,27 @@ if hasattr(sys.stdout, "reconfigure"):
 #
 # 並びは data6（round 5）で使った 13 組と同じ。**教科書に近い書体を先に置く**
 # （cmr10/cmmi10 は Computer Modern、STIX は数式用。実写で外した原因は字形の違いだった）。
+# **数式書体はリポジトリに入れてある**（fonts/。ライセンス文つき、合計 3.8MB）。
+# 実写の教科書は変数が**数式用のイタリック**で、本文用のイタリック（Liberation Italic など）
+# とは字が違う。KaTeX の Math-Italic や cmmi10 がそれで、ここを外すと実写で x が y に化ける。
+# 手元・Kaggle・他人の環境で**同じデータが作れる**ようにするため、システムの書体より先に置く。
+_R = os.path.join(ROOT, "fonts")
 _M = "/usr/local/lib/python3.12/dist-packages/matplotlib/mpl-data/fonts/ttf"
 _L = "/usr/share/fonts/truetype/liberation"
 _J = "/root/.julia/packages/MathTeXEngine/dUSrK/assets/fonts/Luciole-Math"
 _A = "/root/.julia/packages/Animations/OGXDY/docs/src/fonts"
 FONT_CANDIDATES = [
+    # --- リポジトリに入れた数式書体（どこでも同じものが使える）
+    (_R + "/katex/KaTeX_Main-Regular.ttf", _R + "/katex/KaTeX_Math-Italic.ttf"),
+    (_R + "/katex/KaTeX_Main-Bold.ttf", _R + "/katex/KaTeX_Math-BoldItalic.ttf"),
+    (_R + "/cm/cmr10.ttf", _R + "/cm/cmmi10.ttf"),
+    (_R + "/cm/cmb10.ttf", _R + "/cm/cmmib10.ttf"),
+    (_R + "/newcm/NewCM10-Regular.otf", _R + "/newcm/NewCM10-Italic.otf"),
+    (_R + "/newcm/NewCMMath-Regular.otf", _R + "/newcm/NewCM10-Italic.otf"),
+    (_R + "/pagella/TeXGyrePagella-Regular.otf", _R + "/pagella/TeXGyrePagella-Italic.otf"),
+    (_R + "/pagella/TeXGyrePagella-Math.otf", _R + "/pagella/TeXGyrePagella-Italic.otf"),
+    (_R + "/heros/TeXGyreHeros-Regular.otf", _R + "/heros/TeXGyreHeros-Italic.otf"),
+    # --- 環境にあれば使う本文書体（字形の幅を出すため）
     (_M + "/cmr10.ttf", _M + "/cmmi10.ttf"),
     (_M + "/STIXGeneral.ttf", _M + "/STIXGeneralItalic.ttf"),
     (_M + "/DejaVuSerif.ttf", _M + "/DejaVuSerif-Italic.ttf"),
