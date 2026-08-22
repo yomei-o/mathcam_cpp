@@ -33,6 +33,12 @@ struct Step {
   ex::E before, after;  // その手の前後。式木のまま持つので、後から LaTeX でも中置でも出せる
 };
 
+// 1 本の範囲（境界が無い側は空）。二次不等式の「または」を表すのに使う
+struct Range {
+  ex::E lo, hi;
+  bool lo_eq = false, hi_eq = false;
+};
+
 struct Solution {
   bool ok = false;
   std::string why;                 // ok=false のときの理由
@@ -49,6 +55,10 @@ struct Solution {
 
   ex::E lo, hi;                    // 不等式の解の範囲（境界が無い側は空）
   bool lo_eq = false, hi_eq = false;  // 境界に等号を含むか
+
+  // **二次不等式は答えが 2 つの範囲になる**（x < 2 または x > 3）。1 本で済むときは
+  // 上の lo/hi をそのまま使い、2 本以上のときだけこちらに入れる（表示は range_text が見る）。
+  std::vector<Range> ranges;
 };
 
 // ---------------------------------------------------------------- 多項式として見る
@@ -354,6 +364,134 @@ inline void set_range(Solution& r, const std::string& op, const ex::E& bound) {
   r.kind = "inequality";
 }
 
+// 二次式 a x^2 + b x + c = 0 の実数解を**小さい順**に返す。手順も足す
+// （因数分解できるならそれ、できなければ解の公式。solve_eq と同じ言い方にする）。
+// 返り値: 実数解の個数（0 / 1 / 2）
+inline int quad_roots(const ex::Rat& a, const ex::Rat& b, const ex::Rat& cc,
+                      const std::string& var, std::vector<Step>& steps, ex::E& r1, ex::E& r2) {
+  using namespace ex;
+  const E x = sym(var);
+  const std::vector<Rat> co = {cc, b, a};
+  const E norm = eq(from_coeffs(co, var), num(Rat(0)));
+  const Rat disc = b * b - Rat(4) * a * cc;
+  if (disc.neg()) {
+    push(steps, "判別式", "D = b^2 - 4ac = " + disc.str() + " < 0 なので、= 0 になる x は無い",
+         norm, norm);
+    return 0;
+  }
+  long long sq = 0;
+  const bool square = disc.is_int() && isqrt_exact(disc.n, sq);
+  if (square && a.is_int() && b.is_int() && cc.is_int()) {
+    Rat p = (-b + Rat(sq)) / (Rat(2) * a);
+    Rat q = (-b - Rat(sq)) / (Rat(2) * a);
+    if (q < p) { const Rat t = p; p = q; q = t; }
+    auto factor_of = [&](const Rat& root) {
+      return root.d == 1 ? add_n({x, num(-root)})
+                         : add_n({mul_n({num(Rat(root.d)), x}), num(-Rat(root.n))});
+    };
+    const E f1 = factor_of(p), f2 = factor_of(q);
+    const Rat lead = a / (Rat(p.d) * Rat(q.d));
+    const E factored = lead.is_one() ? mul_n({f1, f2}) : mul_n({num(lead), f1, f2});
+    push(steps, "因数分解", "左辺を積の形にする", norm, eq(factored, num(Rat(0))));
+    r1 = num(p);
+    r2 = num(q);
+    return (p == q) ? 1 : 2;
+  }
+  const E sq_e = fn_e("sqrt", {num(disc)});
+  const E denom = num(Rat(2) * a);
+  E e1 = simp(mul_n({add_n({num(-b), neg(sq_e)}), pow_e(denom, num(Rat(-1)))}));
+  E e2 = simp(mul_n({add_n({num(-b), sq_e}), pow_e(denom, num(Rat(-1)))}));
+  if (approx(e2) < approx(e1)) { const E t = e1; e1 = e2; e2 = t; }
+  push(steps, "解の公式",
+       "a = " + a.str() + ", b = " + b.str() + ", c = " + cc.str() +
+           " を x = (-b ± sqrt(b^2 - 4ac)) / (2a) に入れる",
+       norm, eq(x, e1));
+  r1 = e1;
+  r2 = e2;
+  return disc.is_zero() ? 1 : 2;
+}
+
+// 二次不等式（左辺に寄せて a x^2 + b x + c op 0 にしたあと）。
+//
+// **上に開いた放物線（a > 0）で考える**のが人のやり方。a < 0 なら両辺を -1 倍して
+// 向きを変える（そこも手順に出す）。あとは「外側」か「内側」かだけ。
+inline void solve_quad_ineq(Solution& r, std::vector<ex::Rat> c, std::string op,
+                            const ex::E& shown) {
+  using namespace ex;
+  const std::string& var = r.var;
+  const E x = sym(var);
+  Rat a = c[2], b = c[1], cc = c[0];
+  if (a.neg()) {
+    a = -a; b = -b; cc = -cc;
+    op = flip_op(op);
+    const std::vector<Rat> co = {cc, b, a};
+    push(r.steps, "両辺を -1 倍",
+         "x^2 の係数を正にする。負の数を掛けるので不等号の向きが変わる", shown,
+         rel(op, from_coeffs(co, var), num(Rat(0))));
+  }
+  E p, q;
+  const int nr = quad_roots(a, b, cc, var, r.steps, p, q);
+  const bool ge = (op == ">" || op == ">=");
+  const bool with_eq = (op == ">=" || op == "<=");
+  r.ok = true;
+  if (nr == 0) {                                   // 放物線は x 軸と交わらない（常に正）
+    r.kind = ge ? "all" : "empty";
+    push(r.steps, "グラフの向き",
+         ge ? "上に開いた放物線が x 軸より上にあるので、すべての実数で成り立つ"
+            : "上に開いた放物線が x 軸より上にあるので、成り立つ x は無い",
+         shown, shown);
+    return;
+  }
+  if (nr == 1) {                                   // 接する
+    if (ge && with_eq) {                           // >= 0 は常に成り立つ
+      r.kind = "all";
+      push(r.steps, "グラフの向き", "接するだけなので、= も含めればすべての実数で成り立つ",
+           shown, shown);
+      return;
+    }
+    if (!ge && !with_eq) {                         // < 0 は成り立たない
+      r.kind = "empty";
+      push(r.steps, "グラフの向き", "接するだけなので、< 0 になる x は無い", shown, shown);
+      return;
+    }
+    if (!ge && with_eq) {                          // <= 0 は接点のみ
+      r.kind = "point";
+      r.roots.push_back(p);
+      push(r.steps, "グラフの向き", "接点だけが解", eq(x, p), eq(x, p));
+      return;
+    }
+    // > 0 は接点以外すべて
+    Range lo_side, hi_side;
+    hi_side.hi = p;
+    lo_side.lo = p;
+    r.ranges.push_back(hi_side);
+    r.ranges.push_back(lo_side);
+    r.kind = "inequality";
+    push(r.steps, "グラフの向き", "接点では 0 になるので、そこだけ外す", shown, shown);
+    return;
+  }
+  // 交点が 2 つ。外側か内側か
+  r.kind = "inequality";
+  if (ge) {
+    Range left, right;
+    left.hi = p;
+    left.hi_eq = with_eq;
+    right.lo = q;
+    right.lo_eq = with_eq;
+    r.ranges.push_back(left);
+    r.ranges.push_back(right);
+    push(r.steps, "グラフの向き",
+         "上に開いた放物線なので、2 つの解の**外側**で 0 より大きい", shown, shown);
+  } else {
+    r.lo = p;
+    r.hi = q;
+    r.lo_eq = with_eq;
+    r.hi_eq = with_eq;
+    push(r.steps, "グラフの向き",
+         "上に開いた放物線なので、2 つの解の**間**で 0 より小さい", shown, shown);
+  }
+}
+
 inline Solution solve_ineq(const ex::E& in, const std::string& want_var = "") {
   using namespace ex;
   Solution r;
@@ -377,7 +515,14 @@ inline Solution solve_ineq(const ex::E& in, const std::string& want_var = "") {
   if (!poly_coeffs(diff0, r.var, c)) { r.why = "一次式に落とせません"; return r; }
   while (c.size() > 1 && c.back().is_zero()) c.pop_back();
   const size_t deg = c.empty() ? 0 : c.size() - 1;
-  if (deg > 1) { r.why = "二次以上の不等式は未対応"; return r; }
+  if (deg > 2) { r.why = "三次以上の不等式は未対応"; return r; }
+  if (deg == 2) {
+    // 二次不等式。まず左辺に寄せた形を見せてから解く
+    const ex::E shown = rel(op, from_coeffs(c, r.var), num(Rat(0)));
+    if (!equal(shown, in)) push(r.steps, "移項", "右辺を左辺に移して 0 と比べる形にする", in, shown);
+    solve_quad_ineq(r, c, op, shown);
+    return r;
+  }
 
   const E x = sym(r.var);
   if (deg == 0) {                                   // x が消えた（0 < 1 のような形）
@@ -437,22 +582,74 @@ inline Solution solve_ineq(const ex::E& in, const std::string& want_var = "") {
 // ---------------------------------------------------------------- 連立不等式
 
 // 2 つの範囲の重なりを取る。境界が同じ値なら、**厳しい方**（等号を含まない方）が残る。
-inline void intersect(Solution& r, const Solution& s) {
+// 解を「範囲の列」に直す（二次不等式は 2 本になることがある）。
+// **境界の大小は approx で比べる**（sqrt(2) のような無理数が境界に出るので、有理数の比較では
+// 足りない。等しいかどうかだけは式として equal も見る）。
+inline std::vector<Range> as_ranges(const Solution& s) {
+  std::vector<Range> out;
+  if (s.kind == "empty") return out;
+  if (s.kind == "all") { out.push_back(Range()); return out; }
+  if (s.kind == "point") {
+    if (!s.roots.empty()) {
+      Range g;
+      g.lo = g.hi = s.roots[0];
+      g.lo_eq = g.hi_eq = true;
+      out.push_back(g);
+    }
+    return out;
+  }
+  if (!s.ranges.empty()) return s.ranges;
+  Range g;
+  g.lo = s.lo; g.hi = s.hi; g.lo_eq = s.lo_eq; g.hi_eq = s.hi_eq;
+  if (g.lo || g.hi) out.push_back(g);
+  else out.push_back(Range());
+  return out;
+}
+
+// 2 本の範囲の重なり。空なら false
+inline bool range_meet(const Range& a, const Range& b, Range& out) {
   using namespace ex;
-  if (s.lo) {
-    if (!r.lo || r.lo->num < s.lo->num) { r.lo = s.lo; r.lo_eq = s.lo_eq; }
-    else if (r.lo->num == s.lo->num) r.lo_eq = r.lo_eq && s.lo_eq;
+  out = Range();
+  // 下端は大きいほう
+  if (a.lo && b.lo) {
+    const double xa = approx(a.lo), xb = approx(b.lo);
+    if (xa > xb) { out.lo = a.lo; out.lo_eq = a.lo_eq; }
+    else if (xb > xa) { out.lo = b.lo; out.lo_eq = b.lo_eq; }
+    else { out.lo = a.lo; out.lo_eq = a.lo_eq && b.lo_eq; }   // 同じ値なら厳しいほう
+  } else if (a.lo) { out.lo = a.lo; out.lo_eq = a.lo_eq; }
+  else if (b.lo) { out.lo = b.lo; out.lo_eq = b.lo_eq; }
+  // 上端は小さいほう
+  if (a.hi && b.hi) {
+    const double xa = approx(a.hi), xb = approx(b.hi);
+    if (xa < xb) { out.hi = a.hi; out.hi_eq = a.hi_eq; }
+    else if (xb < xa) { out.hi = b.hi; out.hi_eq = b.hi_eq; }
+    else { out.hi = a.hi; out.hi_eq = a.hi_eq && b.hi_eq; }
+  } else if (a.hi) { out.hi = a.hi; out.hi_eq = a.hi_eq; }
+  else if (b.hi) { out.hi = b.hi; out.hi_eq = b.hi_eq; }
+  if (out.lo && out.hi) {
+    const double lo = approx(out.lo), hi = approx(out.hi);
+    if (hi < lo) return false;
+    if (hi == lo && !(out.lo_eq && out.hi_eq)) return false;   // 境界が開いていれば 1 点も残らない
   }
-  if (s.hi) {
-    if (!r.hi || s.hi->num < r.hi->num) { r.hi = s.hi; r.hi_eq = s.hi_eq; }
-    else if (r.hi->num == s.hi->num) r.hi_eq = r.hi_eq && s.hi_eq;
-  }
+  return true;
+}
+
+// 範囲の列どうしの重なり（「または」を含む答えの共通部分）
+inline std::vector<Range> meet_all(const std::vector<Range>& a, const std::vector<Range>& b) {
+  std::vector<Range> out;
+  for (const Range& x : a)
+    for (const Range& y : b) {
+      Range g;
+      if (range_meet(x, y, g)) out.push_back(g);
+    }
+  return out;
 }
 
 inline Solution solve_sys_ineq(const std::vector<ex::E>& rels, const std::string& want_var) {
   using namespace ex;
   Solution r;
   static const char* ord[] = {"1 つ目", "2 つ目", "3 つ目", "4 つ目"};
+  std::vector<Range> acc{Range()};                 // 最初は「すべての実数」
   for (size_t i = 0; i < rels.size(); ++i) {
     const Solution s = solve_ineq(rels[i], want_var);
     if (!s.ok) { r.why = s.why; return r; }
@@ -461,42 +658,38 @@ inline Solution solve_sys_ineq(const std::vector<ex::E>& rels, const std::string
     const std::string label = i < 4 ? ord[i] : "次";
     push(r.steps, label + "の不等式", "まずこれを解く", rels[i], rels[i]);
     for (const Step& st : s.steps) r.steps.push_back(st);
-    if (s.kind == "empty") {                       // 1 本でも成り立たなければ全体が解なし
+    acc = meet_all(acc, as_ranges(s));
+    if (acc.empty()) {                             // 1 本でも成り立たなければ全体が解なし
+      push(r.steps, "共通範囲", "重なりが無いので解なし", num(Rat(0)), num(Rat(0)));
       r.ok = true;
       r.kind = "empty";
       return r;
     }
-    if (s.kind == "all") continue;                 // 常に成り立つ式は範囲を狭めない
-    intersect(r, s);
   }
-
-  if (!r.lo && !r.hi) { r.ok = true; r.kind = "all"; return r; }
-  r.kind = "inequality";
-  if (r.lo && r.hi) {
-    const E lo = r.lo, hi = r.hi;
-    if (hi->num < lo->num || (lo->num == hi->num && !(r.lo_eq && r.hi_eq))) {
-      push(r.steps, "共通範囲", "2 つの範囲に重なりが無いので解なし", num(Rat(0)), num(Rat(0)));
-      r.ok = true;
-      r.kind = "empty";
-      return r;
-    }
-    if (lo->num == hi->num) {                      // x >= 2 かつ x <= 2 → x = 2 の 1 点
-      push(r.steps, "共通範囲", "両端が同じ値なので解は 1 つ", eq(sym(r.var), lo),
-           eq(sym(r.var), lo));
-      r.roots.push_back(lo);
-      r.ok = true;
+  r.ok = true;
+  if (acc.size() == 1) {
+    const Range& g = acc[0];
+    if (!g.lo && !g.hi) { r.kind = "all"; return r; }
+    if (g.lo && g.hi && approx(g.lo) == approx(g.hi)) {   // x >= 2 かつ x <= 2 → 1 点
+      push(r.steps, "共通範囲", "両端が同じ値なので解は 1 つ", eq(sym(r.var), g.lo),
+           eq(sym(r.var), g.lo));
+      r.roots.push_back(g.lo);
       r.kind = "point";
       return r;
     }
+    r.lo = g.lo; r.hi = g.hi; r.lo_eq = g.lo_eq; r.hi_eq = g.hi_eq;
+  } else {
+    r.ranges = acc;
   }
+  r.kind = "inequality";
   // 範囲は「x > 2 かつ x <= 5」の 2 本として持つ（a < x <= b の連鎖は木に無い。
   // 連鎖を木に入れると、印字・解析・パーサの全部に例外が増えるので、答えの文字列だけで作る）
   const E body = sym(r.var);
-  const E lo_rel = r.lo ? rel(r.lo_eq ? ">=" : ">", body, r.lo) : ex::E();
-  const E hi_rel = r.hi ? rel(r.hi_eq ? "<=" : "<", body, r.hi) : ex::E();
+  const Range& g0 = acc[0];
+  const E lo_rel = g0.lo ? rel(g0.lo_eq ? ">=" : ">", body, g0.lo) : ex::E();
+  const E hi_rel = g0.hi ? rel(g0.hi_eq ? "<=" : "<", body, g0.hi) : ex::E();
   const E shown = (lo_rel && hi_rel) ? sys({lo_rel, hi_rel}) : (lo_rel ? lo_rel : hi_rel);
-  push(r.steps, "共通範囲", "それぞれの範囲の重なりを取る", shown, shown);
-  r.ok = true;
+  if (shown) push(r.steps, "共通範囲", "それぞれの範囲の重なりを取る", shown, shown);
   return r;
 }
 
@@ -734,8 +927,29 @@ inline std::string show_e(const ex::E& e, bool latex) {
   return latex ? ex::to_latex(e) : ex::to_infix(e);
 }
 
+// 1 本ぶんの範囲の書き方
+inline std::string one_range(const std::string& var, const Range& g, bool latex) {
+  const std::string le = latex ? " \\le " : " <= ", lt = " < ";
+  const std::string ge = latex ? " \\ge " : " >= ", gt = " > ";
+  if (g.lo && g.hi)
+    return show_e(g.lo, latex) + (g.lo_eq ? le : lt) + var + (g.hi_eq ? le : lt) +
+           show_e(g.hi, latex);
+  if (g.lo) return var + (g.lo_eq ? ge : gt) + show_e(g.lo, latex);
+  if (g.hi) return var + (g.hi_eq ? le : lt) + show_e(g.hi, latex);
+  return "すべての実数";
+}
+
 inline std::string range_text(const Solution& s, bool latex = false) {
   using namespace ex;
+  // **答えが 2 つの範囲になることがある**（二次不等式の「または」）
+  if (!s.ranges.empty()) {
+    std::string out;
+    for (size_t i = 0; i < s.ranges.size(); ++i) {
+      if (i) out += " または ";
+      out += one_range(s.var, s.ranges[i], latex);
+    }
+    return out;
+  }
   // 不等号は中置と同じ書き方（LaTeX のときだけ記号を直す）
   const std::string le = latex ? " \\le " : " <= ", lt = " < ";
   const std::string ge = latex ? " \\ge " : " >= ", gt = " > ";

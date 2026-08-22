@@ -43,6 +43,15 @@ FIXED = [
     # 連立不等式（重なる・重ならない・1 点・片側だけ）
     "2x > 4, x - 1 <= 4", "x > 5, x < 2", "x >= 2, x <= 2", "x > 1, x > 3",
     "-x > -5, 2x >= 4",
+    # 二次不等式（外側・内側・実数解なし・重解・無理数の境界・x^2 の係数が負）
+    "x^2 - 5x + 6 > 0", "x^2 - 5x + 6 >= 0", "x^2 - 5x + 6 < 0", "x^2 - 5x + 6 <= 0",
+    "x^2 - 2 < 0", "x^2 - 2 >= 0", "x^2 + x + 1 > 0", "x^2 + x + 1 < 0",
+    "x^2 - 2x + 1 <= 0", "x^2 - 2x + 1 < 0", "x^2 - 2x + 1 >= 0", "x^2 - 2x + 1 > 0",
+    "-x^2 + 4 > 0", "-x^2 + 4 <= 0", "2x^2 - 3x - 2 >= 0", "x^2 < 4x",
+    "x^2 > 3x - 2", "x^2 + 1 <= 2x - 3", "3x^2 <= 12", "y^2 - 9 > 0",
+    # 二次を含む連立不等式（「または」どうしの重なりが出る）
+    "x^2 - 5x + 6 > 0, x > 0", "x^2 - 9 >= 0, x^2 - 25 <= 0", "x^2 - 4 < 0, x >= 0",
+    "x^2 - 5x + 6 <= 0, x < 2", "x^2 > 1, x^2 < 4", "x^2 - 1 > 0, x < -3",
 ]
 
 
@@ -86,6 +95,34 @@ def gen_sys_ineq(rng):
         a2, v, rng.randint(-6, 6), op2, rng.randint(-9, 9))
 
 
+def gen_quad_ineq(rng):
+    """二次不等式。**根から作る場合と作らない場合を混ぜる**（因数分解できる形・無理数解・
+    実数解なしの 3 通りが必ず出るように）。x^2 の係数が負の形も入れる（向きが変わる手）。
+    """
+    v = rng.choice(["x", "x", "y", "t"])
+    op = rng.choice(["<", "<=", ">", ">="])
+    a = rng.choice([1, 1, 1, 2, 3, -1, -2])
+    if rng.random() < 0.5:                           # 根から作る（因数分解できる）
+        r1, r2 = rng.randint(-6, 6), rng.randint(-6, 6)
+        b = -a * (r1 + r2)
+        c = a * r1 * r2
+    else:                                            # 無理数解・実数解なしも出る
+        b, c = rng.randint(-9, 9), rng.randint(-9, 9)
+    if rng.random() < 0.2:                           # 右辺にも項がある形（移項の手が出る）
+        return "%d%s^2 + %d%s %s %d" % (a, v, b, v, op, -c)
+    return "%d%s^2 + %d%s + %d %s 0" % (a, v, b, v, c, op)
+
+
+def gen_sys_quad(rng):
+    """二次を含む連立不等式（範囲の列どうしの重なり）。"""
+    v = rng.choice(["x", "x", "y"])
+    op1 = rng.choice(["<", "<=", ">", ">="])
+    r1, r2 = rng.randint(-5, 5), rng.randint(-5, 5)
+    b, c = -(r1 + r2), r1 * r2
+    op2 = rng.choice(["<", "<=", ">", ">="])
+    return "%s^2 + %d%s + %d %s 0, %s %s %d" % (v, b, v, c, op1, v, op2, rng.randint(-6, 6))
+
+
 def gen(rng):
     """解ける形の式。方程式・不等式・連立をまとめて振る。"""
     kind = rng.random()
@@ -95,6 +132,10 @@ def gen(rng):
         return gen_sys(rng)
     if kind < 0.45:
         return gen_sys_ineq(rng)
+    if kind < 0.60:
+        return gen_quad_ineq(rng)
+    if kind < 0.68:
+        return gen_sys_quad(rng)
     v = rng.choice(["x", "x", "x", "y", "t"])
     if rng.random() < 0.45:
         a = rng.randint(-9, 9) or 2

@@ -37,6 +37,15 @@ class Step:
         self.after = after
 
 
+class Range:
+    """1 本の範囲（境界が無い側は None）。二次不等式の「または」を表すのに使う。"""
+
+    __slots__ = ("lo", "hi", "lo_eq", "hi_eq")
+
+    def __init__(self, lo=None, hi=None, lo_eq=False, hi_eq=False):
+        self.lo, self.hi, self.lo_eq, self.hi_eq = lo, hi, lo_eq, hi_eq
+
+
 class Solution:
     def __init__(self):
         self.ok = False
@@ -54,6 +63,9 @@ class Solution:
         self.hi = None
         self.lo_eq = False
         self.hi_eq = False
+        # **二次不等式は答えが 2 つの範囲になる**（x < 2 または x > 3）。1 本で済むときは
+        # 上の lo/hi を使い、2 本以上のときだけこちらに入れる（C++ の Solution::ranges と同じ）
+        self.ranges = []
 
 
 def poly_coeffs(e, var, out):
@@ -335,6 +347,107 @@ def set_range(r, op, bound):
     r.kind = "inequality"
 
 
+def quad_roots(a, b, cc, var, steps):
+    """a x^2 + b x + c = 0 の実数解を**小さい順**に返す（C++ の slv::quad_roots と同じ）。
+
+    戻り値: (実数解の個数, r1, r2)
+    """
+    x = X.sym(var)
+    norm = X.eq(from_coeffs([cc, b, a], var), X.num(0))
+    disc = b * b - X.Rat(4) * a * cc
+    if disc.neg():
+        steps.append(Step("判別式",
+                          "D = b^2 - 4ac = %s < 0 なので、= 0 になる x は無い" % disc,
+                          norm, norm))
+        return (0, None, None)
+    sq = isqrt_exact(disc.n) if disc.is_int() else None
+    if sq is not None and a.is_int() and b.is_int() and cc.is_int():
+        p = (-b + X.Rat(sq)) / (X.Rat(2) * a)
+        q = (-b - X.Rat(sq)) / (X.Rat(2) * a)
+        if q < p:
+            p, q = q, p
+
+        def factor_of(root):
+            if root.d == 1:
+                return X.add_n([x, X.num(-root)])
+            return X.add_n([X.mul_n([X.num(X.Rat(root.d)), x]), X.num(-X.Rat(root.n))])
+
+        f1, f2 = factor_of(p), factor_of(q)
+        lead = a / (X.Rat(p.d) * X.Rat(q.d))
+        factored = X.mul_n([f1, f2]) if lead.is_one() else X.mul_n([X.num(lead), f1, f2])
+        steps.append(Step("因数分解", "左辺を積の形にする", norm, X.eq(factored, X.num(0))))
+        return (1 if p == q else 2, X.num(p), X.num(q))
+    sq_e = X.fn_e("sqrt", [X.num(disc)])
+    denom = X.num(X.Rat(2) * a)
+    e1 = X.simp(X.mul_n([X.add_n([X.num(-b), X.neg(sq_e)]), X.pow_e(denom, X.num(-1))]))
+    e2 = X.simp(X.mul_n([X.add_n([X.num(-b), sq_e]), X.pow_e(denom, X.num(-1))]))
+    if X.approx(e2) < X.approx(e1):
+        e1, e2 = e2, e1
+    steps.append(Step("解の公式",
+                      "a = %s, b = %s, c = %s を x = (-b ± sqrt(b^2 - 4ac)) / (2a) に入れる"
+                      % (a, b, cc), norm, X.eq(x, e1)))
+    return (1 if disc.is_zero() else 2, e1, e2)
+
+
+def solve_quad_ineq(r, c, op, shown):
+    """二次不等式（C++ の slv::solve_quad_ineq と同じ規則・同じ文言）。"""
+    var = r.var
+    x = X.sym(var)
+    a, b, cc = c[2], c[1], c[0]
+    if a.neg():
+        a, b, cc = -a, -b, -cc
+        op = X.flip_op(op)
+        r.steps.append(Step("両辺を -1 倍",
+                            "x^2 の係数を正にする。負の数を掛けるので不等号の向きが変わる",
+                            shown, X.rel(op, from_coeffs([cc, b, a], var), X.num(0))))
+    nr, p, q = quad_roots(a, b, cc, var, r.steps)
+    ge = op in (">", ">=")
+    with_eq = op in (">=", "<=")
+    r.ok = True
+    if nr == 0:
+        r.kind = "all" if ge else "empty"
+        r.steps.append(Step("グラフの向き",
+                            "上に開いた放物線が x 軸より上にあるので、すべての実数で成り立つ"
+                            if ge else
+                            "上に開いた放物線が x 軸より上にあるので、成り立つ x は無い",
+                            shown, shown))
+        return
+    if nr == 1:
+        if ge and with_eq:
+            r.kind = "all"
+            r.steps.append(Step("グラフの向き",
+                                "接するだけなので、= も含めればすべての実数で成り立つ",
+                                shown, shown))
+            return
+        if not ge and not with_eq:
+            r.kind = "empty"
+            r.steps.append(Step("グラフの向き", "接するだけなので、< 0 になる x は無い",
+                                shown, shown))
+            return
+        if not ge and with_eq:
+            r.kind = "point"
+            r.roots.append(p)
+            r.steps.append(Step("グラフの向き", "接点だけが解", X.eq(x, p), X.eq(x, p)))
+            return
+        r.ranges.append(Range(None, p, False, False))
+        r.ranges.append(Range(p, None, False, False))
+        r.kind = "inequality"
+        r.steps.append(Step("グラフの向き", "接点では 0 になるので、そこだけ外す", shown, shown))
+        return
+    r.kind = "inequality"
+    if ge:
+        r.ranges.append(Range(None, p, False, with_eq))
+        r.ranges.append(Range(q, None, with_eq, False))
+        r.steps.append(Step("グラフの向き",
+                            "上に開いた放物線なので、2 つの解の**外側**で 0 より大きい",
+                            shown, shown))
+    else:
+        r.lo, r.hi, r.lo_eq, r.hi_eq = p, q, with_eq, with_eq
+        r.steps.append(Step("グラフの向き",
+                            "上に開いた放物線なので、2 つの解の**間**で 0 より小さい",
+                            shown, shown))
+
+
 def solve_ineq(e_in, want_var=""):
     s = Solution()
     op = e_in.name
@@ -358,8 +471,15 @@ def solve_ineq(e_in, want_var=""):
     while len(c) > 1 and c[-1].is_zero():
         c.pop()
     deg = 0 if not c else len(c) - 1
-    if deg > 1:
-        s.why = "二次以上の不等式は未対応"
+    if deg > 2:
+        s.why = "三次以上の不等式は未対応"
+        return s
+    if deg == 2:
+        # 二次不等式。まず左辺に寄せた形を見せてから解く
+        shown = X.rel(op, from_coeffs(c, s.var), X.num(0))
+        if not X.equal(shown, e_in):
+            s.steps.append(Step("移項", "右辺を左辺に移して 0 と比べる形にする", e_in, shown))
+        solve_quad_ineq(s, c, op, shown)
         return s
 
     x = X.sym(s.var)
@@ -422,23 +542,75 @@ def solve_ineq(e_in, want_var=""):
 # ---------------------------------------------------------------- 連立不等式
 
 
-def intersect(r, s):
-    """2 つの範囲の重なりを取る。境界が同じ値なら**厳しい方**（等号なし）が残る。"""
-    if s.lo is not None:
-        if r.lo is None or r.lo.num < s.lo.num:
-            r.lo, r.lo_eq = s.lo, s.lo_eq
-        elif r.lo.num == s.lo.num:
-            r.lo_eq = r.lo_eq and s.lo_eq
-    if s.hi is not None:
-        if r.hi is None or s.hi.num < r.hi.num:
-            r.hi, r.hi_eq = s.hi, s.hi_eq
-        elif r.hi.num == s.hi.num:
-            r.hi_eq = r.hi_eq and s.hi_eq
+def as_ranges(s):
+    """解を「範囲の列」に直す（C++ の slv::as_ranges と同じ）。"""
+    if s.kind == "empty":
+        return []
+    if s.kind == "all":
+        return [Range()]
+    if s.kind == "point":
+        return [Range(s.roots[0], s.roots[0], True, True)] if s.roots else []
+    if s.ranges:
+        return s.ranges
+    if s.lo is not None or s.hi is not None:
+        return [Range(s.lo, s.hi, s.lo_eq, s.hi_eq)]
+    return [Range()]
+
+
+def range_meet(a, b):
+    """2 本の範囲の重なり。空なら None（C++ の slv::range_meet と同じ）。
+
+    **境界の大小は approx で比べる**（sqrt(2) のような無理数が境界に出る）。
+    """
+    out = Range()
+    if a.lo is not None and b.lo is not None:
+        xa, xb = X.approx(a.lo), X.approx(b.lo)
+        if xa > xb:
+            out.lo, out.lo_eq = a.lo, a.lo_eq
+        elif xb > xa:
+            out.lo, out.lo_eq = b.lo, b.lo_eq
+        else:
+            out.lo, out.lo_eq = a.lo, (a.lo_eq and b.lo_eq)
+    elif a.lo is not None:
+        out.lo, out.lo_eq = a.lo, a.lo_eq
+    elif b.lo is not None:
+        out.lo, out.lo_eq = b.lo, b.lo_eq
+    if a.hi is not None and b.hi is not None:
+        xa, xb = X.approx(a.hi), X.approx(b.hi)
+        if xa < xb:
+            out.hi, out.hi_eq = a.hi, a.hi_eq
+        elif xb < xa:
+            out.hi, out.hi_eq = b.hi, b.hi_eq
+        else:
+            out.hi, out.hi_eq = a.hi, (a.hi_eq and b.hi_eq)
+    elif a.hi is not None:
+        out.hi, out.hi_eq = a.hi, a.hi_eq
+    elif b.hi is not None:
+        out.hi, out.hi_eq = b.hi, b.hi_eq
+    if out.lo is not None and out.hi is not None:
+        lo, hi = X.approx(out.lo), X.approx(out.hi)
+        if hi < lo:
+            return None
+        if hi == lo and not (out.lo_eq and out.hi_eq):
+            return None
+    return out
+
+
+def meet_all(a, b):
+    """範囲の列どうしの重なり（「または」を含む答えの共通部分）。"""
+    out = []
+    for x in a:
+        for y in b:
+            g = range_meet(x, y)
+            if g is not None:
+                out.append(g)
+    return out
 
 
 def solve_sys_ineq(rels, want_var=""):
     r = Solution()
     ordn = ["1 つ目", "2 つ目", "3 つ目", "4 つ目"]
+    acc = [Range()]                                  # 最初は「すべての実数」
     for i, one in enumerate(rels):
         s = solve_ineq(one, want_var)
         if not s.ok:
@@ -452,44 +624,39 @@ def solve_sys_ineq(rels, want_var=""):
         label = ordn[i] if i < 4 else "次"
         r.steps.append(Step(label + "の不等式", "まずこれを解く", one, one))
         r.steps.extend(s.steps)
-        if s.kind == "empty":                       # 1 本でも成り立たなければ全体が解なし
+        acc = meet_all(acc, as_ranges(s))
+        if not acc:                                  # 1 本でも成り立たなければ全体が解なし
+            r.steps.append(Step("共通範囲", "重なりが無いので解なし", X.num(0), X.num(0)))
             r.ok = True
             r.kind = "empty"
             return r
-        if s.kind == "all":
-            continue                                # 常に成り立つ式は範囲を狭めない
-        intersect(r, s)
-
-    if r.lo is None and r.hi is None:
-        r.ok = True
-        r.kind = "all"
-        return r
-    r.kind = "inequality"
-    if r.lo is not None and r.hi is not None:
-        lo, hi = r.lo, r.hi
-        if hi.num < lo.num or (lo.num == hi.num and not (r.lo_eq and r.hi_eq)):
-            r.steps.append(Step("共通範囲", "2 つの範囲に重なりが無いので解なし",
-                                X.num(0), X.num(0)))
-            r.ok = True
-            r.kind = "empty"
+    r.ok = True
+    if len(acc) == 1:
+        g = acc[0]
+        if g.lo is None and g.hi is None:
+            r.kind = "all"
             return r
-        if lo.num == hi.num:                        # x >= 2 かつ x <= 2 → x = 2 の 1 点
+        if g.lo is not None and g.hi is not None and X.approx(g.lo) == X.approx(g.hi):
             r.steps.append(Step("共通範囲", "両端が同じ値なので解は 1 つ",
-                                X.eq(X.sym(r.var), lo), X.eq(X.sym(r.var), lo)))
-            r.roots.append(lo)
-            r.ok = True
+                                X.eq(X.sym(r.var), g.lo), X.eq(X.sym(r.var), g.lo)))
+            r.roots.append(g.lo)
             r.kind = "point"
             return r
+        r.lo, r.hi, r.lo_eq, r.hi_eq = g.lo, g.hi, g.lo_eq, g.hi_eq
+    else:
+        r.ranges = acc
+    r.kind = "inequality"
     # 範囲は「x > 2 かつ x <= 5」の 2 本として持つ（a < x <= b の連鎖は木に無い）
     body = X.sym(r.var)
-    lo_rel = X.rel(">=" if r.lo_eq else ">", body, r.lo) if r.lo is not None else None
-    hi_rel = X.rel("<=" if r.hi_eq else "<", body, r.hi) if r.hi is not None else None
+    g0 = acc[0]
+    lo_rel = X.rel(">=" if g0.lo_eq else ">", body, g0.lo) if g0.lo is not None else None
+    hi_rel = X.rel("<=" if g0.hi_eq else "<", body, g0.hi) if g0.hi is not None else None
     if lo_rel is not None and hi_rel is not None:
         shown = X.sys_of([lo_rel, hi_rel])
     else:
         shown = lo_rel if lo_rel is not None else hi_rel
-    r.steps.append(Step("共通範囲", "それぞれの範囲の重なりを取る", shown, shown))
-    r.ok = True
+    if shown is not None:
+        r.steps.append(Step("共通範囲", "それぞれの範囲の重なりを取る", shown, shown))
     return r
 
 
@@ -715,7 +882,25 @@ def show_e(e, latex):
     return X.to_latex(e) if latex else X.to_infix(e)
 
 
+def one_range(var, g, latex=False):
+    """1 本ぶんの範囲の書き方（C++ の slv::one_range と同じ）。"""
+    le = " \\le " if latex else " <= "
+    ge = " \\ge " if latex else " >= "
+    lt, gt = " < ", " > "
+    if g.lo is not None and g.hi is not None:
+        return (show_e(g.lo, latex) + (le if g.lo_eq else lt) + var
+                + (le if g.hi_eq else lt) + show_e(g.hi, latex))
+    if g.lo is not None:
+        return var + (ge if g.lo_eq else gt) + show_e(g.lo, latex)
+    if g.hi is not None:
+        return var + (le if g.hi_eq else lt) + show_e(g.hi, latex)
+    return "すべての実数"
+
+
 def range_text(s, latex=False):
+    # **答えが 2 つの範囲になることがある**（二次不等式の「または」）
+    if s.ranges:
+        return " または ".join(one_range(s.var, g, latex) for g in s.ranges)
     le = " \\le " if latex else " <= "
     ge = " \\ge " if latex else " >= "
     lt, gt = " < ", " > "
