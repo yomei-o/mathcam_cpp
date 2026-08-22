@@ -16,10 +16,10 @@ CAS まで完成。微積分・手書きは未着手。
 
 | モデル / 手 | 実写 | 内訳（image0 / image1 / image2 / image3） |
 |---|---|---|
-| round 2 epoch 13（出荷中の `models/sym_det_v4.onnx`、34 クラス） | 18 → 19 | 7/11, 12/12, 0/2, 0/2 |
+| round 2 epoch 13（出荷中の `models/sym_det_v5.onnx`、34 クラス） | 18 → 19 | 7/11, 12/12, 0/2, 0/2 |
 | round 5（劣化なし data6、39 クラス）epoch 3/6/9/12/18 | 6 / 5 / 5 / 8 / 3 | 合成 val は最後まで mAP50 0.993 |
 | **round 6（劣化あり data7、39 クラス）epoch 0** | 19 | 6/11, 12/12, 0/2, 1/2 |
-| **round 6 epoch 3（いま出荷している `models/sym_det_v4.onnx`、39 クラス）** | **22** | 7/11, 12/12, 1/2, **2/2** |
+| **round 6 epoch 3（いま出荷している `models/sym_det_v5.onnx`、39 クラス）** | **22** | 7/11, 12/12, 1/2, **2/2** |
 | round 6 epoch 0 / 6 / 9 / 12 | 19 / 19 / 19 / 20 | **同じコードで測り直した値**。epoch 3 が頂点 |
 
 「18 → 19」は学習ではなく**構造で直した**ぶん（`pl::fix_parens` と上付き判定の締め）。
@@ -44,7 +44,7 @@ round 7 の順番待ち。
 | solve + 手順 | 一次・二次方程式、**一次不等式**、**2 元 1 次の連立方程式**、**連立不等式**。移項・分母を払う・両辺を割る（負の数のときは向きが変わる）・因数分解・積が 0・解の公式・判別式・加減法・代入法・共通範囲。両言語で**出力が一字一句一致**（452 件） |
 | 組版 | 式木 → 見た目の木 → 画像 + 記号ごとの正解枠。入れ子（分数の中の根号、根号の中の上付き）まで描ける。**教科書の書き方**（変数はイタリック・マイナスは U+2212）も出せる |
 | データセット生成 | `mathcam dataset` / `tools/dataset.py`。**同じ種なら両言語で同じデータ** |
-| 記号検出器 | YOLOv8n を合成 20,000 枚で学習（Kaggle T4）。**mAP50 0.9939 / mAP50-95 0.876**。`models/sym_det_v4.onnx`（12.3MB、NMS なし export、232 ノード） |
+| 記号検出器 | YOLOv8n を合成 20,000 枚で学習（Kaggle T4）。**mAP50 0.9939 / mAP50-95 0.876**。`models/sym_det_v5.onnx`（12.3MB、NMS なし export、232 ノード） |
 | レイアウト解析 | 枠 → 式木。合成 **5,600 式で 100%**（`mathcam selftest`） |
 | 端から端まで | 検出 → 解析 → solve。**今までの書き方の合成画像で 95〜98%**、**教科書の書き方だと 33.3%**、**実写の教科書は 0 / 12**（下の表を見ること）。CLI は `mathcam photo --img foo.png --crop x0,y0,x1,y1 --steps` |
 | WASM デモを公開 | https://yomei-o.github.io/mathcam_cpp/wasm/ 。サンプル画像 5 枚・ファイル選択・カメラ・**式をドラッグで囲む**・向きを 90° ずつ回す・検出枠の重ね描き・手順表示。1 枚 1.3〜2.7 秒。**公開された実物のバイト列**を node に通して s1 が解けることを確認済み |
@@ -86,7 +86,7 @@ round 7 の順番待ち。
 
 | モデル | 実写 32 問 |
 |---|---|
-| **`models/sym_det_v4.onnx`（round 6 epoch 3、出荷中）** | **29 / 32** |
+| **`models/sym_det_v5.onnx`（round 6 epoch 3、出荷中）** | **29 / 32** |
 | round 7（data8: 文字の重み + × と文字）epoch 6 | 28 / 32 |
 | round 8（data9: 数式書体）epoch 0 / 12 / 15 | 27 / 27 / 26 |
 | round 9（data10: 全部 + 縦棒の 1）epoch 0/3/6/9/12/15/18 | 25 / **28** / 27 / 27 / 23 / 26 / 23 |
@@ -106,7 +106,7 @@ round 7 の順番待ち。
 |---|---|---|---|
 | round 2 | data2 | 教科書の書き方（イタリック + U+2212） | epoch 13 で 19/32 相当（出荷していた `sym_det.onnx`） |
 | round 5 | data6 | 書体 13 組・39 クラス（劣化なし） | 8/27（epoch 12）。epoch 18 では 3/27 まで落ちた |
-| round 6 | data7 | **写真に近づける劣化**（明暗ムラ・粒子・JPEG） | **25/32**（epoch 3）← いま出荷している `sym_det_v4.onnx` |
+| round 6 | data7 | **写真に近づける劣化**（明暗ムラ・粒子・JPEG） | **25/32**（epoch 3）← いま出荷している `sym_det_v5.onnx` |
 | round 7 | data8 | 文字の重みを均す + `× と文字`の同居 | 25/32（epoch 6 と 15）。**epoch 6〜18 が 22〜25 で安定**（round 5/6 は崩れた） |
 | round 8 | data9 | **数式書体**（KaTeX Math Italic・cmmi10・NewCM・Pagella・Heros をリポジトリに入れた） | 23 / 21 / 23 / 23（epoch 0/3/6/9）。**数式書体だけでは v4 を超えなかった** |
 | round 9 | data10 | 上の全部 + **縦棒だけの `1`**（35%）。data7 の劣化・data8 の文字の重み・data9 の数式書体を合わせたもの | 学習中 |
@@ -151,7 +151,7 @@ YOLO を C++ で学習している**ので、できないのではなく**まだ
 * 消える: `/kaggle/working` の data7 / data8 / runs7（round 6 の重み）。
   **data8 は `python tools/make_mix.py --out /kaggle/working/data8 --exe ./mathcam` で 2 分で作り直せる**
   （そのために混ぜ方をリポジトリに入れた）。
-* 残る: 出荷した `models/sym_det_v4.onnx`（round 6 epoch 3）と、手元に落とした候補
+* 残る: 出荷した `models/sym_det_v5.onnx`（round 6 epoch 3）と、手元に落とした候補
   `models/cand_*.onnx`（gitignore なのでリポジトリには入らない）。
 
 GPU が戻ったらやること（この順）:
@@ -172,7 +172,7 @@ GPU が戻ったらやること（この順）:
 ## 次の一手（2026-08-22 夕の時点。上から順に）
 
 1. ~~round 9（data10）を測って 29/32 を超えたら出荷~~ → **測った。超えなかった**
-   （最良 28/32、epoch 3）。**出荷は `sym_det_v4.onnx` のまま**。
+   （最良 28/32、epoch 3）。**出荷は `sym_det_v5.onnx` のまま**。
    次にやるなら「データの作り方」より**物差しを増やす**（写真を足す）。いまの 32 問では
    1〜4 行の差が揺れに埋もれ、どの案が効いたのか決められない。
    写真を足したら `tools/check_key.py` で切り出しを検査してから使う。
@@ -376,8 +376,8 @@ GPU が戻ったらやること（この順）:
 * ビルド: `sh build/cc.sh pure/mathcam.cpp -o mathcam.exe`（MSVC、vcvars 不要）/
   `build/gcc.sh`（mingw）/ `sh build/emcc.sh wasm/mathcam_wasm.cpp -o wasm/mathcam.js`（WASM）。
 * デモをローカルで見る: `python -m http.server 8000` → `http://127.0.0.1:8000/wasm/`。
-  ブラウザ抜きの検査は `node wasm/test_node.js`（`models/sym_det_v4.onnx` を読んで s1.png を解く）。
+  ブラウザ抜きの検査は `node wasm/test_node.js`（`models/sym_det_v5.onnx` を読んで s1.png を解く）。
 * `pure/` のエンジン（autograd・ONNX ランタイム・optim・trainrt など）は crowd_cpp から移植済み。
-* 学習済みの検出器 `models/sym_det_v4.onnx` は**例外的にリポジトリに入れてある**（デモが動かないと
+* 学習済みの検出器 `models/sym_det_v5.onnx` は**例外的にリポジトリに入れてある**（デモが動かないと
   意味がないため）。他の `models/*.onnx` は入れない（1 コマンドで作り直せる）。
 * GPU が必要になったら姉妹リポの `kaggle_server_cpp`（kbridge）経由。

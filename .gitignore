@@ -12,6 +12,6 @@ models/*.onnx
 *.pth
 *.pt
 # 学習済みの検出器はデモが動くように例外的に入れる（他は 1 コマンドで作り直せる）
-!models/sym_det_v4.onnx
+!models/sym_det_v5.onnx
 # 教科書の写真（著作物）は入れない。実写の検証は手元でやる
 test_data/

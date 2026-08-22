@@ -4,7 +4,7 @@
 ここは**教科書を撮った写真**に対して、切り出し 1 つずつを CLI に通し、読めた式を
 正解表（tests/real_photos.txt）と**CAS で比べる**（書き方の違いは吸収し、意味が同じかだけ見る）。
 
-  python tools/real_eval.py --dir test_data --model models/sym_det_v4.onnx
+  python tools/real_eval.py --dir test_data --model models/sym_det_v5.onnx
   python tools/real_eval.py --dir test_data --model models/sym_det_tb.onnx --show
 
 写真そのものはリポジトリに入れていない（教科書は著作物）。正解表と、この測り方だけ置く。
@@ -71,7 +71,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dir", default="test_data")
     ap.add_argument("--key", default=os.path.join(ROOT, "tests", "real_photos.txt"))
-    ap.add_argument("--model", default="models/sym_det_v4.onnx")
+    ap.add_argument("--model", default="models/sym_det_v5.onnx")
     ap.add_argument("--conf", type=float, default=0.25)
     ap.add_argument("--exe", default="")
     ap.add_argument("--show", action="store_true", help="外したものの記号列も出す")

@@ -1,6 +1,6 @@
 """写真 1 枚を端から端まで（Python 側）— pure/pipeline.hpp + photo の鏡。
 
-  python tools/photo.py --img q.png --model models/sym_det_v4.onnx --steps
+  python tools/photo.py --img q.png --model models/sym_det_v5.onnx --steps
   python tools/photo.py --img test_data/image1.jpeg --crop 1180,480,1540,570 --show-syms
 
 C++ 側は自作の ONNX ランタイム、こちらは onnxruntime を使う（**推論の実装を合わせるのが
@@ -153,7 +153,7 @@ def load_image(path, crop=""):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--img", required=True)
-    ap.add_argument("--model", default="models/sym_det_v4.onnx")
+    ap.add_argument("--model", default="models/sym_det_v5.onnx")
     ap.add_argument("--crop", default="", help="x0,y0,x1,y1（実写のページから 1 式だけ取る）")
     ap.add_argument("--imgsz", type=int, default=640)
     ap.add_argument("--conf", type=float, default=0.25)

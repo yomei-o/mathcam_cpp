@@ -1,6 +1,6 @@
 """写真の道のパリティ — 同じ画像を入れたら C++ と Python が同じ記号・同じ式を出すか。
 
-  python tools/parity/photo.py --n 20 --model models/sym_det_v4.onnx
+  python tools/parity/photo.py --n 20 --model models/sym_det_v5.onnx
 
 C++ は自作の ONNX ランタイム、Python は onnxruntime。**推論の実装は違う**ので、
 数値が完全一致する保証はない。ここで縛るのは
@@ -42,7 +42,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--n", type=int, default=20)
     ap.add_argument("--seed", type=int, default=1)
-    ap.add_argument("--model", default="models/sym_det_v4.onnx")
+    ap.add_argument("--model", default="models/sym_det_v5.onnx")
     ap.add_argument("--px", type=int, default=48)
     ap.add_argument("--font", default="")
     ap.add_argument("--exe", default="")
