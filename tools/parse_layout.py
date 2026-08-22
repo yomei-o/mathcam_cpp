@@ -375,6 +375,17 @@ def fix_ones(v, h_ref):
         # 隙間の上限は桁つなぎ（40%）より緩くする。教科書は字間が広く、実測で 41% だった
         if same_line and same_size and gap * 100 <= h * 55:
             v[i].cls = "1"
+    # **計算問題で、文字が l しか無いなら、その l は 1**（C++ の fix_ones と同じ規則）。
+    # 右隣が数字でない縦棒（`21` の 1 など）は上の規則では直せない。× ÷ 小数点が出ている行は
+    # 小学校の計算で、そこに変数 l は出てこない（生成器からも外した）。
+    arith_marks = any((not s.atom) and s.cls in ("times", "div", "dot") for s in v)
+    has_l = any((not s.atom) and s.cls == "l" for s in v)
+    other = any((not s.atom) and s.cls != "l" and
+                ((len(s.cls) == 1 and s.cls.isalpha()) or s.cls == "t2") for s in v)
+    if arith_marks and has_l and not other:
+        for s in v:
+            if (not s.atom) and s.cls == "l":
+                s.cls = "1"
     return v
 
 

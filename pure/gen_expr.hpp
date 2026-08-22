@@ -76,7 +76,10 @@ inline std::string arith(Rng& r) {
   // **文字と × ÷ を同じ絵に出す形。** これが無いと、検出器は「文字が出る絵」と
   // 「× が出る絵」を別々に見ることになり、x と × を見分ける必要がない
   // （実測: 実写で × が x と読まれた。出荷中のモデルは × のクラスすら持っていない）。
-  const std::string v = kVars[r.below(26)];
+  // **l は使わない**（縦棒だけの `1` と見分けられないので、計算問題の文字からは外す。
+  // 下の pl::fix_ones が「計算問題で他に文字が無ければ l は 1」と直せるようにするため）
+  std::string v = kVars[r.below(26)];
+  if (v == "l") v = "x";
   const long long a = pick(r, 2, 12), b = pick(r, 2, 9);
   const uint64_t f = r.below(3);
   if (f == 0) return std::to_string(a) + " \xc3\x97 " + v + " + " + std::to_string(b);

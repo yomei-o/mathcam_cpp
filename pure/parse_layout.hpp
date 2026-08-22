@@ -402,6 +402,21 @@ inline void fix_ones(std::vector<Sym>& v, int h_ref) {
     if (same_line && same_size && gap * 100 <= h * 55) v[i].cls = "1";
     (void)h_ref;
   }
+  // **計算問題で、文字が l しか無いなら、その l は 1**。
+  // 右隣が数字でない縦棒（`21` の 1 など）は上の規則では直せない。ただし × ÷ 小数点が
+  // 出ている行は小学校の計算で、そこに変数 l は出てこない（生成器からも外した）。
+  // 実測: `12 × 15 × 35` の 1 が l になって `350` と読まれた。
+  bool arith_marks = false, other_letter = false, has_l = false;
+  for (const Sym& s : v) {
+    if (s.atom) continue;
+    if (s.cls == "times" || s.cls == "div" || s.cls == "dot") arith_marks = true;
+    else if (s.cls == "l") has_l = true;
+    else if (s.cls.size() == 1 && s.cls[0] >= 'a' && s.cls[0] <= 'z') other_letter = true;
+    else if (s.cls == "t2") other_letter = true;
+  }
+  if (arith_marks && has_l && !other_letter)
+    for (Sym& s : v)
+      if (!s.atom && s.cls == "l") s.cls = "1";
 }
 
 inline void merge_digits(std::vector<Sym>& v) {
