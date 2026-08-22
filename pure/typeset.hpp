@@ -96,12 +96,18 @@ struct Style {
   int ink = 0;
   int paper = 255;
   int blur = 0;
+  // **数字の 1 を「縦棒だけ」の字で描く。** 実写の教科書の 1 は旗も台も無い縦棒で
+  // （実測: `103 × 12 - 36` の 1 が小文字 l と読まれた）、手元の書体はどれも旗つき。
+  // 学習データにこの字形が 1 つも無いと、モデルは縦棒を l と読むしかない。
+  // ラベルは "1" のまま、**字だけ l のグリフを借りる**（Century Gothic の 1 と同じ形）。
+  bool plain_one = false;
 };
 
 inline void push_digits(std::vector<P>& out, long long v, const Style& st = Style()) {
   if (v < 0) { out.push_back(pg(st.minus_cp, "-")); v = -v; }
   std::string s = std::to_string(v);
-  for (char c : s) out.push_back(pg(c, std::string(1, c)));
+  for (char c : s)
+    out.push_back(pg(st.plain_one && c == '1' ? 'l' : c, std::string(1, c)));
 }
 
 // 意味の木 -> 見た目の木。ここが「a/b は分数として描く」を決める場所。

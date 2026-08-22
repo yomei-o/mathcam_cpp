@@ -69,6 +69,7 @@ static ts::Style style_of(int argc, char** argv) {
   ts::Style st;
   st.italic_vars = has_flag(argc, argv, "--italic");
   st.minus_cp = arg_of(argc, argv, "--minus", "hyphen") == "2212" ? 0x2212 : '-';
+  st.plain_one = has_flag(argc, argv, "--plain-one");     // 1 を縦棒だけの字で描く
   return st;
 }
 
@@ -225,6 +226,9 @@ static int cmd_dataset(int argc, char** argv) {
   // マイナスが U+2212**（実測: どちらも学習データに無く、本物の写真で x が y に化けた）。
   const int ital_pct = std::atoi(arg_of(argc, argv, "--italic-pct", "50").c_str());
   const int minus_pct = std::atoi(arg_of(argc, argv, "--minus2212-pct", "50").c_str());
+  // 数字の 1 を「縦棒だけ」の字で描く割合。実写の教科書の 1 は旗の無い縦棒で、
+  // 手元の書体はどれも旗つき。この字形が学習データに無いと、縦棒は l と読むしかない
+  const int one_pct = std::atoi(arg_of(argc, argv, "--plain-one-pct", "0").c_str());
   const bool no_img = has_flag(argc, argv, "--no-images");   // 枠だけ作る（パリティ確認用）
   const bool photo_like = has_flag(argc, argv, "--photo-like");
   // 小学校の計算（× ÷ 小数点 帯分数 中括弧）を作るモード。**描く道が別**（木を経由しない）
@@ -264,6 +268,7 @@ static int cmd_dataset(int argc, char** argv) {
     const int px = (int)(px_min + (int)rng.below((uint64_t)(px_max - px_min + 1)));
     const bool use_ital = (int)rng.below(100) < ital_pct;
     const bool use_2212 = (int)rng.below(100) < minus_pct;
+    const bool plain_one = (int)rng.below(100) < one_pct;
     // 紙と字の明るさ・ぼけ。写真は真っ黒と真っ白ではない（実測: 紙 225 / 字 60 前後）
     const int paper = photo_like ? (int)(215 + rng.below(41)) : 255;   // 215..255
     const int ink = photo_like ? (int)(20 + rng.below(71)) : 0;        // 20..90
@@ -283,6 +288,7 @@ static int cmd_dataset(int argc, char** argv) {
     ts::Style st;
     st.italic_vars = use_ital && has_i;
     st.minus_cp = use_2212 ? 0x2212 : '-';
+    st.plain_one = plain_one;
     st.paper = paper;
     st.ink = ink;
     st.blur = blur;

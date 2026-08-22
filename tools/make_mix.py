@@ -160,6 +160,10 @@ def main():
     ap.add_argument("--px-max", type=int, default=76)
     ap.add_argument("--italic-pct", type=int, default=80)
     ap.add_argument("--minus2212-pct", type=int, default=80)
+    # **数字の 1 を縦棒だけの字で描く割合。** 実写の教科書の 1 は旗も台も無い縦棒で、
+    # 手元の書体はどれも旗つき。この字形が学習データに無いと、縦棒は l と読むしかない
+    # （実測: `103 × 12 - 36` が `6*l - 36` になった）。ラベルは "1" のまま。
+    ap.add_argument("--plain-one-pct", type=int, default=35)
     ap.add_argument("--seed-base", type=int, default=70000)
     ap.add_argument("--list", action="store_true")
     a = ap.parse_args()
@@ -194,7 +198,8 @@ def main():
                        "--px-min", str(a.px_min), "--px-max", str(a.px_max),
                        "--font", rom, "--font-italic", ital, "--prefix", prefix,
                        "--italic-pct", str(a.italic_pct),
-                       "--minus2212-pct", str(a.minus2212_pct)]
+                       "--minus2212-pct", str(a.minus2212_pct),
+                       "--plain-one-pct", str(a.plain_one_pct)]
                 if photo:
                     cmd.append("--photo-like")
                 if arith:

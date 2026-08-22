@@ -57,7 +57,7 @@ def degrade(img, grad, grad_dir, noise, nseed):
 
 
 def build(out_dir, n, seed, px_min, px_max, font_path="", no_images=False,
-          font_italic="", italic_pct=50, minus2212_pct=50, prefix="", photo_like=False,
+          font_italic="", italic_pct=50, minus2212_pct=50, one_pct=0, prefix="", photo_like=False,
           arith=False):
     f = T.Font(font_path)
     fi = None
@@ -80,6 +80,8 @@ def build(out_dir, n, seed, px_min, px_max, font_path="", no_images=False,
         px = px_min + r.below(px_max - px_min + 1)
         use_ital = r.below(100) < italic_pct
         use_2212 = r.below(100) < minus2212_pct
+        # 数字の 1 を「縦棒だけ」の字で描く（C++ と同じ順で引く）
+        plain_one = r.below(100) < one_pct
         # 紙と字の明るさ・ぼけ（C++ と同じ順序・同じ範囲で引く）
         paper = int(215 + r.below(41)) if photo_like else 255
         ink = int(20 + r.below(71)) if photo_like else 0
@@ -96,7 +98,7 @@ def build(out_dir, n, seed, px_min, px_max, font_path="", no_images=False,
             skipped += 1
             continue
         st = T.Style(italic_vars=(use_ital and fi is not None),
-                     minus_cp=(0x2212 if use_2212 else ord("-")),
+                     minus_cp=(0x2212 if use_2212 else ord("-")), plain_one=plain_one,
                      ink=ink, paper=paper, blur=blur)
         fi_use = fi if st.italic_vars else None
         stem = "%s%06d" % (prefix, made)
@@ -144,6 +146,8 @@ def main():
     ap.add_argument("--font-italic", dest="font_italic", default="")
     ap.add_argument("--italic-pct", dest="italic_pct", type=int, default=50)
     ap.add_argument("--minus2212-pct", dest="minus2212_pct", type=int, default=50)
+    ap.add_argument("--plain-one-pct", dest="one_pct", type=int, default=0,
+                    help="数字の 1 を縦棒だけの字で描く割合（実写の教科書の 1 はそれ）")
     ap.add_argument("--prefix", default="")
     ap.add_argument("--photo-like", dest="photo_like", action="store_true",
                     help="紙と字の明るさを振り、たまにぼかす（写真に寄せる）")
@@ -154,7 +158,7 @@ def main():
                     help="枠だけ作る（パリティ確認や、絵が要らない検算のため）")
     a = ap.parse_args()
     made, skipped, f = build(a.out, a.n, a.seed, a.px_min, a.px_max, a.font, a.no_images,
-                             a.font_italic, a.italic_pct, a.minus2212_pct, a.prefix,
+                             a.font_italic, a.italic_pct, a.minus2212_pct, a.one_pct, a.prefix,
                              a.photo_like, a.arith)
     print("%s に %d 件（捨てた式 %d 件、px %d..%d、font upem %d）"
           % (a.out, made, skipped, a.px_min, a.px_max, f.upem))

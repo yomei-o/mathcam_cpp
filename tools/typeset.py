@@ -43,9 +43,14 @@ class Style:
     学習データに無いだけで、端から端までの正解率が 95.0% -> 33.3% に落ちた。
     """
 
-    __slots__ = ("italic_vars", "minus_cp", "ink", "paper", "blur")
+    __slots__ = ("italic_vars", "minus_cp", "ink", "paper", "blur", "plain_one")
 
-    def __init__(self, italic_vars=False, minus_cp=ord("-"), ink=0, paper=255, blur=0):
+    def __init__(self, italic_vars=False, minus_cp=ord("-"), ink=0, paper=255, blur=0,
+                 plain_one=False):
+        # **数字の 1 を「縦棒だけ」の字で描く**（C++ の ts::Style::plain_one と同じ）。
+        # 実写の教科書の 1 は旗も台も無い縦棒で、手元の書体はどれも旗つき。学習データに
+        # この字形が無いと、モデルは縦棒を l と読むしかない。ラベルは "1" のまま。
+        self.plain_one = plain_one
         self.italic_vars = italic_vars
         self.minus_cp = minus_cp
         # 写真は真っ黒と真っ白ではない（実測: 教科書の写真は紙 225 前後、字 60 前後）
@@ -79,7 +84,7 @@ def push_digits(out, v, st=None):
         out.append(pg(st.minus_cp, "-"))
         v = -v
     for c in str(v):
-        out.append(pg(ord(c), c))
+        out.append(pg(ord("l") if (st.plain_one and c == "1") else ord(c), c))
 
 
 def split_frac(e):
