@@ -91,6 +91,13 @@ def diff(e, var):
             return X.mul_n([e, X.fn_e("ln", [b]), diff(p, var)])
         raise Fail("底にも指数にも変数がある形は未対応")
     if e.k == X.FN:
+        # 対数は底を明示して持っている（log(a, f)）。{log_a f}' = f' / (f ln a)
+        if e.name == "log" and len(e.kids) == 2:
+            base, f2 = e.kids
+            if has_var(base, var):
+                raise Fail("底に変数がある対数の微分は未対応")
+            return X.mul_n([X.pow_e(f2, X.num(-1)), X.pow_e(X.fn_e("ln", [base]), X.num(-1)),
+                            diff(f2, var)])
         if len(e.kids) != 1:
             raise Fail("この関数の微分は未対応")
         f = e.kids[0]
@@ -170,6 +177,80 @@ def linear_in(e, var):
     return (a, b)
 
 
+def is_poly_in(e, var):
+    """var の多項式か（部分積分で「微分するほう」に回せる形か）。"""
+    if not has_var(e, var):
+        return True                                  # 定数はそのまま係数
+    if e.k == X.SYM:
+        return e.name == var
+    if e.k == X.POW:
+        return (e.kids[0].k == X.SYM and e.kids[0].name == var and X.is_num(e.kids[1])
+                and e.kids[1].num.is_int() and not e.kids[1].num.neg())
+    return False
+
+
+def integ_any(e, var):
+    """Add でも通す積分（部分積分の途中で出る「多項式 ÷ x」を積分するのに要る）。"""
+    ts = list(e.kids) if e.k == X.ADD else [e]
+    parts = []
+    for t in ts:
+        got = integ_term(t, var)
+        if got is None:
+            return None
+        parts.append(got[0])
+    return X.add_n(parts)
+
+
+def by_parts(t, var):
+    """**部分積分**（∫u v' = uv - ∫u'v）。
+
+    u が多項式なので、微分を繰り返せば必ず 0 になり、表のように交互に符号をつけて
+    足すだけで終わる（教科書の「順次部分積分」）。x sin(x) / x^2 e^x / x ln(x) が解ける。
+    """
+    if t.k != X.MUL:
+        return None
+    us, gs = [], []
+    for f in t.kids:
+        (us if is_poly_in(f, var) else gs).append(f)
+    if len(gs) != 1 or not us:
+        return None
+    u = X.mul_n(us)
+    g = gs[0]
+    if not has_var(u, var):
+        return None                                  # 係数だけなら普通の積分で足りる
+
+    # log は「微分するほう」に回す（∫x^n ln(x) は U ln(x) - ∫U/x）。
+    # 中身が ax（定数項なし）のときだけ: そうでないと U/(ax+b) が多項式にならない
+    if g.k == X.FN and (g.name == "ln" or (g.name == "log" and len(g.kids) == 2)):
+        arg = g.kids[0] if g.name == "ln" else g.kids[1]
+        ab = linear_in(arg, var)
+        if ab is None or ab[0].is_zero() or not ab[1].is_zero():
+            return None
+        U = integ_any(u, var)
+        if U is None:
+            return None
+        rest = integ_any(X.expand(X.mul_n([U, X.pow_e(X.sym(var), X.num(-1))])), var)
+        if rest is None:
+            return None
+        return (X.add_n([X.mul_n([U, g]), X.mul_n([X.num(-1), rest])]), "部分積分")
+
+    U, V, acc, sign = u, g, X.num(0), 1
+    for _ in range(13):
+        got = integ_term(V, var)
+        if got is None:
+            return None
+        V = X.simp(got[0])
+        acc = X.add_n([acc, X.mul_n([X.num(sign), U, V])])
+        try:
+            U = X.simp(diff(U, var))
+        except Fail:
+            return None
+        if X.is_num(U) and U.num.is_zero():           # u^(k) = 0 になったら打ち切り
+            return (acc, "部分積分")
+        sign = -sign
+    return None
+
+
 def integ_term(t, var):
     """1 項の積分。(式, 規則名) か None（C++ の cal::integ_term と同じ）。"""
     if not has_var(t, var):
@@ -190,6 +271,24 @@ def integ_term(t, var):
         return (X.mul_n([X.num(X.Rat(1, 2)), X.pow_e(X.sym(var), X.num(2))]), "x の n 乗の積分")
     if t.k == X.POW:
         b, p = t.kids
+        # 底が定数で指数が 1 次: a^(cx+d) -> a^(cx+d) / (c ln a)
+        if not has_var(b, var) and has_var(p, var):
+            cd = linear_in(p, var)
+            if cd is None or cd[0].is_zero():
+                return None
+            return (X.mul_n([X.num(X.Rat(1) / cd[0]), X.pow_e(X.fn_e("ln", [b]), X.num(-1)), t]),
+                    "指数関数の積分")
+        # 1/cos^2 と 1/sin^2（教科書の表にある形。中身は 1 次まで）
+        if X.is_num(p) and p.num == X.Rat(-2) and b.k == X.FN and len(b.kids) == 1:
+            ab2 = linear_in(b.kids[0], var)
+            if ab2 is not None and not ab2[0].is_zero():
+                if b.name == "cos":
+                    return (X.mul_n([X.num(X.Rat(1) / ab2[0]), X.fn_e("tan", [b.kids[0]])]),
+                            "1/cos^2 の積分")
+                if b.name == "sin":
+                    return (X.mul_n([X.num(X.Rat(-1) / ab2[0]),
+                                     X.pow_e(X.fn_e("tan", [b.kids[0]]), X.num(-1))]),
+                            "1/sin^2 の積分")
         if not X.is_num(p) or has_var(p, var):
             return None
         ab = linear_in(b, var)
@@ -214,7 +313,17 @@ def integ_term(t, var):
             return (X.mul_n([ia, X.fn_e("sin", [f])]), "cos の積分")
         if t.name == "exp":
             return (X.mul_n([ia, X.fn_e("exp", [f])]), "exp の積分")
-    return None
+        # tan は「置換すると log になる」形: ∫tan = -ln|cos|
+        if t.name == "tan":
+            return (X.mul_n([ia, X.num(-1),
+                             X.fn_e("ln", [X.fn_e("abs", [X.fn_e("cos", [f])])])]),
+                    "tan の積分")
+        # ∫ln(ax+b) dx = ((ax+b)ln(ax+b) - (ax+b))/a （部分積分の結果を表として持つ）
+        if t.name == "ln":
+            return (X.mul_n([ia, X.add_n([X.mul_n([f, X.fn_e("ln", [f])]),
+                                          X.mul_n([X.num(-1), f])])]), "ln の積分")
+        return None
+    return by_parts(t, var)
 
 
 def integrate(e, want_var="", lo=None, hi=None):

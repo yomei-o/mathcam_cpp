@@ -25,6 +25,11 @@ FIXED = [
     "x^3 + 2x", "3x^2 - 5x + 6", "sqrt(x)", "1/x", "x*sin(x)", "(2x + 1)^3",
     "exp(2x)", "ln(x)", "x^2 + 1/x", "5", "x", "-x^2 + 3x", "sin(3x) + cos(2x)",
     "x*exp(x)", "tan(x)", "(x^2 + 1)^4", "sqrt(2x + 1)", "1/(2x + 3)",
+    # 対数（底つき）・指数・三角の穴埋め分と、部分積分
+    "log(2, x)", "log(x)", "log(3, x^2 + 1)", "2^x", "3^(2x + 1)", "x*log(2, x)",
+    "1/cos(x)^2", "1/sin(x)^2", "x^2*exp(x)", "x*ln(x)", "x^2*ln(x)", "x*cos(2x)",
+    "x^3*sin(x)", "ln(2x + 1)", "x*2^x", "sin(x)*cos(x)", "exp(x)*sin(x)",
+    "sin(pi/6)*x", "x + pi", "sin(x + pi/3)",
 ]
 # 定積分の範囲（式ごとに 1 つ）
 RANGES = ["0,2", "1,3", "-1,1"]
@@ -54,6 +59,8 @@ def rnd_expr(r):
         return "ln(%dx + %d)" % (a, abs(b) + 1)
     if k < 94:
         return "cos(%dx) + %dx" % (a, b)
+    if k < 97:
+        return "%dx*exp(%dx)" % (a, G.pick(r, 1, 3))          # 部分積分
     return "%d/x + %dx^2" % (a, G.pick(r, 1, 5))
 
 

@@ -124,6 +124,14 @@ inline ex::E diff(const ex::E& e, const std::string& var, bool* ok) {
     }
     case Kind::Fn: {
       const std::string& n = e->name;
+      // 対数は底を明示して持っている（log(a, f)）。{log_a f}' = f' / (f ln a)
+      if (n == "log" && e->kids.size() == 2) {
+        const E& base = e->kids[0];
+        if (has_var(base, var)) return fail("底に変数がある対数の微分は未対応");
+        const E& f2 = e->kids[1];
+        const E in2 = diff(f2, var, ok);
+        return mul_n({pow_e(f2, num(Rat(-1))), pow_e(fn_e("ln", {base}), num(Rat(-1))), in2});
+      }
       if (e->kids.size() != 1) return fail("この関数の微分は未対応");
       const E& f = e->kids[0];
       const E inner = diff(f, var, ok);
@@ -177,6 +185,7 @@ inline Result differentiate(const ex::E& in, const std::string& want_var = "") {
 //
 // 1 つの項を積分する。できなければ ok=false。
 inline bool integ_term(const ex::E& t, const std::string& var, ex::E& out, std::string& rule);
+inline bool by_parts(const ex::E& t, const std::string& var, ex::E& out, std::string& rule);
 
 // a*var + b の形なら a と b を返す（1 次の中身。置換積分の代わり）
 inline bool linear_in(const ex::E& e, const std::string& var, ex::Rat& a, ex::Rat& b) {
@@ -209,6 +218,85 @@ inline bool linear_in(const ex::E& e, const std::string& var, ex::Rat& a, ex::Ra
   return true;
 }
 
+// var の多項式か（部分積分で「微分するほう」に回せる形か）
+inline bool is_poly_in(const ex::E& e, const std::string& var) {
+  using namespace ex;
+  if (!has_var(e, var)) return is_num(e) || true;      // 定数はそのまま係数
+  if (e->k == Kind::Sym) return e->name == var;
+  if (e->k == Kind::Pow)
+    return e->kids[0]->k == Kind::Sym && e->kids[0]->name == var && is_num(e->kids[1]) &&
+           e->kids[1]->num.is_int() && !e->kids[1]->num.neg();
+  return false;
+}
+
+// Add でも通す積分（部分積分の途中で出る「多項式 ÷ x」を積分するのに要る）
+inline bool integ_any(const ex::E& e, const std::string& var, ex::E& out) {
+  using namespace ex;
+  std::vector<E> ts;
+  if (e->k == Kind::Add) ts = e->kids; else ts.push_back(e);
+  std::vector<E> parts;
+  for (const E& t : ts) {
+    E it;
+    std::string r;
+    if (!integ_term(t, var, it, r)) return false;
+    parts.push_back(it);
+  }
+  out = add_n(parts);
+  return true;
+}
+
+// **部分積分**（∫u v' = uv - ∫u'v）。u が多項式なので、微分を繰り返せば必ず 0 になり、
+// 表のように交互に符号をつけて足すだけで終わる（教科書の「順次部分積分」）。
+//   x sin(x) / x^2 e^x / x ln(x) のような形が解けるようになる。
+inline bool by_parts(const ex::E& t, const std::string& var, ex::E& out, std::string& rule) {
+  using namespace ex;
+  if (t->k != Kind::Mul) return false;
+  std::vector<E> us, gs;
+  for (const E& f : t->kids) {
+    if (is_poly_in(f, var)) us.push_back(f);
+    else gs.push_back(f);
+  }
+  if (gs.size() != 1 || us.empty()) return false;
+  const E u = mul_n(us);
+  const E g = gs[0];
+  if (!has_var(u, var)) return false;                  // 係数だけなら普通の積分で足りる
+
+  // log は「微分するほう」に回す（∫x^n ln(x) は U ln(x) - ∫U/x）。
+  // 中身が ax（定数項なし）のときだけ: そうでないと U/(ax+b) が多項式にならない
+  if ((g->k == Kind::Fn) && (g->name == "ln" || (g->name == "log" && g->kids.size() == 2))) {
+    const E arg = g->name == "ln" ? g->kids[0] : g->kids[1];
+    Rat a(0), b(0);
+    if (!linear_in(arg, var, a, b) || a.is_zero() || !b.is_zero()) return false;
+    E U;
+    if (!integ_any(u, var, U)) return false;
+    E rest;
+    if (!integ_any(expand(mul_n({U, pow_e(sym(var), num(Rat(-1)))})), var, rest)) return false;
+    out = add_n({mul_n({U, g}), mul_n({num(Rat(-1)), rest})});
+    rule = "部分積分";
+    return true;
+  }
+
+  E U = u, V = g, acc = num(Rat(0));
+  long long sign = 1;
+  for (int i = 0; i <= 12; ++i) {
+    E Vn;
+    std::string r2;
+    if (!integ_term(V, var, Vn, r2)) return false;
+    V = simp(Vn);
+    acc = add_n({acc, mul_n({num(Rat(sign)), U, V})});
+    bool ok2 = true;
+    U = simp(diff(U, var, &ok2));
+    if (!ok2) return false;
+    if (is_num(U) && U->num.is_zero()) {               // u^(k) = 0 になったら打ち切り
+      out = acc;
+      rule = "部分積分";
+      return true;
+    }
+    sign = -sign;
+  }
+  return false;
+}
+
 inline bool integ_term(const ex::E& t, const std::string& var, ex::E& out, std::string& rule) {
   using namespace ex;
   if (!has_var(t, var)) {                              // 定数 -> c*x
@@ -239,6 +327,30 @@ inline bool integ_term(const ex::E& t, const std::string& var, ex::E& out, std::
   if (t->k == Kind::Pow) {
     const E& b = t->kids[0];
     const E& p = t->kids[1];
+    // 底が定数で指数が 1 次: a^(cx+d) -> a^(cx+d) / (c ln a)
+    if (!has_var(b, var) && has_var(p, var)) {
+      Rat c2(0), d2(0);
+      if (!linear_in(p, var, c2, d2) || c2.is_zero()) return false;
+      out = mul_n({num(Rat(1) / c2), pow_e(fn_e("ln", {b}), num(Rat(-1))), t});
+      rule = "指数関数の積分";
+      return true;
+    }
+    // 1/cos^2 と 1/sin^2（教科書の表にある形。中身は 1 次まで）
+    if (is_num(p) && p->num == Rat(-2) && b->k == Kind::Fn && b->kids.size() == 1) {
+      Rat a2(0), c2(0);
+      if (linear_in(b->kids[0], var, a2, c2) && !a2.is_zero()) {
+        if (b->name == "cos") {
+          out = mul_n({num(Rat(1) / a2), fn_e("tan", {b->kids[0]})});
+          rule = "1/cos^2 の積分";
+          return true;
+        }
+        if (b->name == "sin") {
+          out = mul_n({num(Rat(-1) / a2), pow_e(fn_e("tan", {b->kids[0]}), num(Rat(-1)))});
+          rule = "1/sin^2 の積分";
+          return true;
+        }
+      }
+    }
     if (!is_num(p) || has_var(p, var)) return false;
     Rat a(0), c(0);
     if (!linear_in(b, var, a, c) || a.is_zero()) return false;   // 中身は 1 次だけ
@@ -260,8 +372,21 @@ inline bool integ_term(const ex::E& t, const std::string& var, ex::E& out, std::
     if (t->name == "sin") { out = mul_n({ia, num(Rat(-1)), fn_e("cos", {f})}); rule = "sin の積分"; return true; }
     if (t->name == "cos") { out = mul_n({ia, fn_e("sin", {f})}); rule = "cos の積分"; return true; }
     if (t->name == "exp") { out = mul_n({ia, fn_e("exp", {f})}); rule = "exp の積分"; return true; }
+    // tan は「置換すると log になる」形: ∫tan = -ln|cos|
+    if (t->name == "tan") {
+      out = mul_n({ia, num(Rat(-1)), fn_e("ln", {fn_e("abs", {fn_e("cos", {f})})})});
+      rule = "tan の積分";
+      return true;
+    }
+    // ∫ln(ax+b) dx = ((ax+b)ln(ax+b) - (ax+b))/a （部分積分の結果を表として持つ）
+    if (t->name == "ln") {
+      out = mul_n({ia, add_n({mul_n({f, fn_e("ln", {f})}), mul_n({num(Rat(-1)), f})})});
+      rule = "ln の積分";
+      return true;
+    }
     return false;
   }
+  if (by_parts(t, var, out, rule)) return true;
   return false;
 }
 

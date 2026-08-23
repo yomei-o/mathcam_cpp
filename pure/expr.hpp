@@ -337,6 +337,101 @@ inline E pow_e(const E& b_in, const E& e_in) {
   return raw(Kind::Pow, {b, p});
 }
 
+// v の k 乗根が整数なら true（対数の底を見つけるのに使う）
+inline bool iroot(long long v, long long k, long long& out) {
+  if (v < 0 || k <= 0) return false;
+  if (v == 0) { out = 0; return true; }
+  long long r = (long long)std::llround(std::pow((double)v, 1.0 / (double)k));
+  for (long long c = r > 2 ? r - 2 : 0; c <= r + 2; ++c) {
+    long long q = 1;
+    bool ovf = false;
+    for (long long i = 0; i < k; ++i) { q *= c; if (q > (1LL << 40)) { ovf = true; break; } }
+    if (!ovf && q == v) { out = c; return true; }
+  }
+  return false;
+}
+
+// v = base^e と書けるうち **e が最大**のものを返す（4 は 2^2 であって 4^1 ではない、と見る）。
+// これで log の底が一致するかを判定できる: log_4(8) は 4=2^2, 8=2^3 なので 3/2。
+inline void prim_pow(const Rat& v, Rat& base, long long& e) {
+  base = v;
+  e = 1;
+  if (v.n <= 0) return;
+  for (long long k = 32; k >= 2; --k) {
+    long long rn = 0, rd = 0;
+    if (iroot(v.n, k, rn) && iroot(v.d, k, rd) && rn > 0) {
+      base = Rat(rn, rd);
+      e = k;
+      return;
+    }
+  }
+}
+
+// log_a(x) が有理数になるか（log_2(8) = 3、log_4(8) = 3/2、log_2(1/8) = -3）
+inline bool log_exact(const Rat& a, const Rat& x, Rat& out) {
+  if (a.n <= 0 || x.n <= 0 || a.is_one()) return false;
+  if (x.is_one()) { out = Rat(0); return true; }
+  Rat ra, rx;
+  long long ia = 0, ix = 0;
+  prim_pow(a, ra, ia);
+  prim_pow(x, rx, ix);
+  if (ra == rx) { out = Rat(ix, ia); return true; }
+  if (ra == Rat(1) / rx) { out = Rat(-ix, ia); return true; }
+  return false;
+}
+
+inline bool is_pi(const E& e) {
+  return e->k == Kind::Fn && e->name == "pi" && e->kids.empty();
+}
+
+// 角が c·π の形か（c は有理数）。0 も c = 0 として受ける
+inline bool pi_coeff(const E& a, Rat& c) {
+  if (is_num(a) && a->num.is_zero()) { c = Rat(0); return true; }
+  if (is_pi(a)) { c = Rat(1); return true; }
+  if (a->k == Kind::Mul && a->kids.size() == 2 && is_num(a->kids[0]) && is_pi(a->kids[1])) {
+    c = a->kids[0]->num;
+    return true;
+  }
+  return false;
+}
+
+// sin(t·π/12) の厳密値（t は 0..23）。15°(t が 12 と互いに素) は返さない
+inline bool sin12(long long t, E& out) {
+  const long long sign = t < 12 ? 1 : -1;
+  long long u = t % 12;
+  if (u > 6) u = 12 - u;                             // sin は 90° をはさんで対称
+  E v;
+  if (u == 0) v = num(Rat(0));
+  else if (u == 2) v = num(Rat(1, 2));               // 30°
+  else if (u == 3) v = mul_n({num(Rat(1, 2)), pow_e(num(Rat(2)), num(Rat(1, 2)))});   // 45°
+  else if (u == 4) v = mul_n({num(Rat(1, 2)), pow_e(num(Rat(3)), num(Rat(1, 2)))});   // 60°
+  else if (u == 6) v = num(Rat(1));                  // 90°
+  else return false;                                 // 15° 刻みの半端な角は畳まない
+  out = sign < 0 ? mul_n({num(Rat(-1)), v}) : v;
+  return true;
+}
+
+// c·π の sin / cos / tan を厳密に返す（教科書の値の表）
+inline bool trig_exact(const std::string& name, const Rat& c, E& out) {
+  const long long d = c.d;
+  long long nn = c.n % (2 * d);                      // c を [0, 2) に落とす
+  if (nn < 0) nn += 2 * d;
+  const Rat t12 = Rat(nn, d) * Rat(12);
+  if (!t12.is_int()) return false;
+  const long long t = t12.n;                         // 0..23（15° 単位）
+  if (t % 12 == 1 || t % 12 == 5 || t % 12 == 7 || t % 12 == 11) return false;
+  if (name == "sin") return sin12(t, out);
+  if (name == "cos") return sin12((t + 6) % 24, out);
+  if (name == "tan") {
+    if (t == 6 || t == 18) return false;             // 90°・270° は定義されない
+    E sn, cs;
+    if (!sin12(t, sn) || !sin12((t + 6) % 24, cs)) return false;
+    out = mul_n({sn, pow_e(cs, num(Rat(-1)))});
+    return true;
+  }
+  return false;
+}
+
 // 関数。数値で閉じるものだけ畳む（sqrt(4)=2 など）。それ以外は Fn のまま。
 inline E fn_e(const std::string& name, std::vector<E> args) {
   for (E& a : args) a = simp(a);
@@ -349,6 +444,18 @@ inline E fn_e(const std::string& name, std::vector<E> args) {
     return mul_n({args[0], pow_e(args[1], num(Rat(-1)))});
   if (name == "mixed" && args.size() == 3)
     return add_n({args[0], mul_n({args[1], pow_e(args[2], num(Rat(-1)))})});
+  // **常用対数は底 10 を明示した形に直す**（log(x) と log(10, x) を別の木にしない）
+  if (name == "log" && args.size() == 1) return fn_e("log", {num(Rat(10)), args[0]});
+  if (name == "log" && args.size() == 2 && is_num(args[0]) && is_num(args[1])) {
+    Rat v;
+    if (log_exact(args[0]->num, args[1]->num, v)) return num(v);
+  }
+  // 特別角（30°・45°・60° とその仲間）の三角関数は厳密な値にする
+  if (args.size() == 1 && (name == "sin" || name == "cos" || name == "tan")) {
+    Rat c;
+    E v;
+    if (pi_coeff(args[0], c) && trig_exact(name, c, v)) return v;
+  }
   if (args.size() == 1 && is_num(args[0])) {
     const Rat& r = args[0]->num;
     if (name == "abs") return num(r.neg() ? -r : r);
@@ -627,7 +734,9 @@ inline std::string to_infix(const E& e, int parent) {
         Rat ac = minus ? -c : c;
         E body = ac.is_one() && !is_num(rest) ? rest
                  : (is_num(rest) && rest->num.is_one() ? num(ac) : mul_n({num(ac), rest}));
-        s += wrap(body, 1);
+        // **中身が和なら括弧が要る**。a - (2x + 1) を "a - 2*x + 1" と書くと符号が変わる
+        // （展開すると和の項に割れるので、--no-expand の道でだけ出ていた）
+        s += wrap(body, 2);
       }
       return s;
     }
@@ -676,6 +785,7 @@ inline std::string to_infix(const E& e, int parent) {
       return (bneed ? "(" + to_infix(b) + ")" : wrap(b, 4)) + "^" + ps;
     }
     case Kind::Fn: {
+      if (e->kids.empty()) return e->name;            // 定数（pi）は括弧を付けない
       std::string s = e->name + "(";
       for (size_t i = 0; i < e->kids.size(); ++i) { if (i) s += ", "; s += to_infix(e->kids[i]); }
       return s + ")";
@@ -714,7 +824,7 @@ inline std::string to_latex(const E& e, int parent = 0) {
         Rat ac = minus ? -c : c;
         E body = ac.is_one() && !is_num(rest) ? rest
                  : (is_num(rest) && rest->num.is_one() ? num(ac) : mul_n({num(ac), rest}));
-        s += to_latex(body, 1);
+        s += body->k == Kind::Add ? "(" + to_latex(body) + ")" : to_latex(body, 1);
       }
       return s;
     }
@@ -759,6 +869,10 @@ inline std::string to_latex(const E& e, int parent = 0) {
       return bs + "^{" + to_latex(p) + "}";
     }
     case Kind::Fn: {
+      if (e->kids.empty()) return "\\" + e->name;    // \pi
+      // log は底を下付きで書く（log(a, x) -> \log_{a} x）
+      if (e->name == "log" && e->kids.size() == 2)
+        return "\\log_{" + to_latex(e->kids[0]) + "} " + to_latex(e->kids[1], 4);
       // Σ は sum(k, 1, n, 中身) の 4 引数で持ち、印字だけ数学の形にする
       if (e->name == "sum" && e->kids.size() == 4)
         return "\\sum_{" + to_latex(e->kids[0]) + "=" + to_latex(e->kids[1]) + "}^{" +
@@ -793,7 +907,7 @@ inline std::string to_latex(const E& e, int parent = 0) {
 // 関数として扱う名前（これ以外の名前 + 括弧は掛け算）
 inline bool is_fn_name(const std::string& n) {
   return n == "sqrt" || n == "frac" || n == "mixed" || n == "sin" || n == "cos" || n == "tan" || n == "ln" || n == "exp" ||
-         n == "abs" || n == "sum";
+         n == "abs" || n == "sum" || n == "log";
 }
 
 struct Parser {
@@ -929,6 +1043,8 @@ struct Parser {
       // 名前は**英字の連なりだけ**（数字は含めない。`x2` は x*2 と読む）
       std::string name;
       while (i < s.size() && isalpha((unsigned char)s[i])) name += s[i++];
+      // **円周率は定数**（p*i と読ませない）。2pi や pi/6 は掛け算・割り算として続く
+      if (name == "pi") return fn_e("pi", {});
       // **関数呼び出しは名前が関数のときだけ**。そうしないと `2x(x - 1)` の `x(...)` が
       // 「関数 x の呼び出し」になり、`2x(x-1) = 5` が展開できない式として残る
       // （実写の写真でこの形が出て、答えが出せなかった）。数式では変数のあとの括弧は掛け算。
@@ -1035,6 +1151,9 @@ inline double approx(const E& e) {
     case Kind::Mul: { double s = 1; for (const E& c : e->kids) s *= approx(c); return s; }
     case Kind::Pow: return std::pow(approx(e->kids[0]), approx(e->kids[1]));
     case Kind::Fn: {
+      if (e->name == "pi") return 3.14159265358979323846;
+      if (e->name == "log" && e->kids.size() == 2)
+        return std::log(approx(e->kids[1])) / std::log(approx(e->kids[0]));
       const double a = e->kids.empty() ? 0.0 : approx(e->kids[0]);
       if (e->name == "sin") return std::sin(a);
       if (e->name == "cos") return std::cos(a);

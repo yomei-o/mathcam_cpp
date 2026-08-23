@@ -224,6 +224,7 @@ inline P present(const ex::E& e, bool paren, const Style& st) {
       // "sum(k)" になる。Σ を大きな記号と上下の添字で描くのは認識側の仕事（クラスに
       // Σ が無いので、勝手に字を増やすと学習データと食い違う）。いまは書いたとおりに描く。
       for (char c : e->name) row.push_back(pg(c, std::string(1, c)));
+      if (e->kids.empty()) break;                    // 定数（pi）は括弧を付けない
       std::vector<P> args;
       for (size_t i = 0; i < e->kids.size(); ++i) {
         if (i) args.push_back(pg(',', ","));

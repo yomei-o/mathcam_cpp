@@ -185,14 +185,13 @@ def present(e, paren=False, st=None):
         # Σ が無いので、勝手に字を増やすと学習データと食い違う）。いまは書いたとおりに描く。
         for c in e.name:
             row.append(pg(ord(c), c))
-        args = []
-        for i, c in enumerate(e.kids):
-            if i:
-                args.append(pg(ord(","), ","))
-            args.append(present(c, False, st))
-        if not args:
-            args.append(present(X.num(0), False, st))
-        row.append(pn(PAREN, [pn(ROW, args)]))
+        args = None if not e.kids else []            # 定数（pi）は括弧を付けない
+        if args is not None:
+            for i, c in enumerate(e.kids):
+                if i:
+                    args.append(pg(ord(","), ","))
+                args.append(present(c, False, st))
+            row.append(pn(PAREN, [pn(ROW, args)]))
     elif e.k == X.REL:
         # 演算子は name の 1 文字ずつを字として置く（"=" のときは以前と同じ絵）。
         # "<=" は暫定で '<' '=' の 2 字（本物の ≤ の字とクラス追加は認識側の仕事）
@@ -702,7 +701,7 @@ def main():
     ap.add_argument("--labels", default="")
     ap.add_argument("--px", type=int, default=48)
     ap.add_argument("--font", default="")
-    a = ap.parse_args()
+    a = ap.parse_args(X.cli_argv(("--expr", "--out", "--labels", "--font")))
     e, err = X.parse(a.expr)
     if err:
         print("parse error: %s" % err)

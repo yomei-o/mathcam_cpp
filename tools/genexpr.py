@@ -176,7 +176,7 @@ def main():
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--state", action="store_true")
     ap.add_argument("--arith", action="store_true", help="小学校の計算を出す")
-    a = ap.parse_args()
+    a = ap.parse_args(X.cli_argv(("--out",)))
     r = Rng(a.seed)
     for _ in range(a.n):
         e = arith(r) if a.arith else one(r)

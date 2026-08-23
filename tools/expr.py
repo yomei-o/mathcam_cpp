@@ -403,6 +403,117 @@ def pow_e(b_in, e_in):
     return raw(POW, [b, p])
 
 
+def iroot(v, k):
+    """v の k 乗根が整数なら返す（対数の底を見つけるのに使う）。C++ の iroot と同じ。"""
+    if v < 0 or k <= 0:
+        return None
+    if v == 0:
+        return 0
+    r = round(v ** (1.0 / k))
+    for c in range(max(0, r - 2), r + 3):
+        q = 1
+        ovf = False
+        for _ in range(k):
+            q *= c
+            if q > (1 << 40):
+                ovf = True
+                break
+        if not ovf and q == v:
+            return c
+    return None
+
+
+def prim_pow(v):
+    """v = base^e と書けるうち **e が最大**のものを返す（4 は 2^2 であって 4^1 ではない）。
+
+    これで log の底が一致するかを判定できる: log_4(8) は 4=2^2, 8=2^3 なので 3/2。
+    """
+    if v.n <= 0:
+        return (v, 1)
+    for k in range(32, 1, -1):
+        rn, rd = iroot(v.n, k), iroot(v.d, k)
+        if rn is not None and rd is not None and rn > 0:
+            return (Rat(rn, rd), k)
+    return (v, 1)
+
+
+def log_exact(a, x):
+    """log_a(x) が有理数になるか（log_2(8)=3、log_4(8)=3/2、log_2(1/8)=-3）。"""
+    if a.n <= 0 or x.n <= 0 or a.is_one():
+        return None
+    if x.is_one():
+        return Rat(0)
+    ra, ia = prim_pow(a)
+    rx, ix = prim_pow(x)
+    if ra == rx:
+        return Rat(ix, ia)
+    if ra == Rat(1) / rx:
+        return Rat(-ix, ia)
+    return None
+
+
+def is_pi(e):
+    return e.k == FN and e.name == "pi" and not e.kids
+
+
+def pi_coeff(a):
+    """角が c·π の形か（c は有理数）。0 も c = 0 として受ける。"""
+    if is_num(a) and a.num.is_zero():
+        return Rat(0)
+    if is_pi(a):
+        return Rat(1)
+    if a.k == MUL and len(a.kids) == 2 and is_num(a.kids[0]) and is_pi(a.kids[1]):
+        return a.kids[0].num
+    return None
+
+
+def sin12(t):
+    """sin(t·π/12) の厳密値（t は 0..23）。15°(t が 12 と互いに素) は返さない。"""
+    sign = 1 if t < 12 else -1
+    u = t % 12
+    if u > 6:
+        u = 12 - u                                   # sin は 90° をはさんで対称
+    if u == 0:
+        v = num(0)
+    elif u == 2:
+        v = num(Rat(1, 2))                           # 30°
+    elif u == 3:
+        v = mul_n([num(Rat(1, 2)), pow_e(num(2), num(Rat(1, 2)))])      # 45°
+    elif u == 4:
+        v = mul_n([num(Rat(1, 2)), pow_e(num(3), num(Rat(1, 2)))])      # 60°
+    elif u == 6:
+        v = num(1)                                   # 90°
+    else:
+        return None                                  # 15° 刻みの半端な角は畳まない
+    return mul_n([num(-1), v]) if sign < 0 else v
+
+
+def trig_exact(name, c):
+    """c·π の sin / cos / tan を厳密に返す（教科書の値の表）。"""
+    d = c.d
+    nn = c.n % (2 * d)                               # c を [0, 2) に落とす
+    if nn < 0:
+        nn += 2 * d
+    t12 = Rat(nn, d) * Rat(12)
+    if not t12.is_int():
+        return None
+    t = t12.n                                        # 0..23（15° 単位）
+    if t % 12 in (1, 5, 7, 11):
+        return None
+    if name == "sin":
+        return sin12(t)
+    if name == "cos":
+        return sin12((t + 6) % 24)
+    if name == "tan":
+        if t in (6, 18):
+            return None                              # 90°・270° は定義されない
+        sn, cs = sin12(t), sin12((t + 6) % 24)
+        if sn is None or cs is None:
+            return None
+        return mul_n([sn, pow_e(cs, num(-1))])
+    return None
+
+
 def fn_e(name, args):
     args = [simp(a) for a in args]
     if name == "sqrt" and len(args) == 1:
@@ -413,6 +524,20 @@ def fn_e(name, args):
         return mul_n([args[0], pow_e(args[1], num(-1))])
     if name == "mixed" and len(args) == 3:
         return add_n([args[0], mul_n([args[1], pow_e(args[2], num(-1))])])
+    # **常用対数は底 10 を明示した形に直す**（log(x) と log(10, x) を別の木にしない）
+    if name == "log" and len(args) == 1:
+        return fn_e("log", [num(10), args[0]])
+    if name == "log" and len(args) == 2 and is_num(args[0]) and is_num(args[1]):
+        v = log_exact(args[0].num, args[1].num)
+        if v is not None:
+            return num(v)
+    # 特別角（30°・45°・60° とその仲間）の三角関数は厳密な値にする
+    if len(args) == 1 and name in ("sin", "cos", "tan"):
+        c = pi_coeff(args[0])
+        if c is not None:
+            v = trig_exact(name, c)
+            if v is not None:
+                return v
     if len(args) == 1 and is_num(args[0]):
         r = args[0].num
         if name == "abs":
@@ -644,7 +769,9 @@ def to_infix(e):
                     s += "-"
             else:
                 s += " - " if minus else " + "
-            s += _wrap(body, 1)
+            # **中身が和なら括弧が要る**。a - (2x + 1) を "a - 2*x + 1" と書くと符号が変わる
+            # （展開すると和の項に割れるので、--no-expand の道でだけ出ていた）
+            s += _wrap(body, 2)
         return s
     if e.k == MUL:
         up, down = split_num_den(e)
@@ -674,6 +801,8 @@ def to_infix(e):
         bneed = is_num(b) and (b.num.neg() or not b.num.is_int())
         return ("(" + to_infix(b) + ")" if bneed else _wrap(b, 4)) + "^" + ps
     if e.k == FN:
+        if not e.kids:
+            return e.name                            # 定数（pi）は括弧を付けない
         return e.name + "(" + ", ".join(to_infix(c) for c in e.kids) + ")"
     if e.k == REL:
         return to_infix(e.kids[0]) + " " + e.name + " " + to_infix(e.kids[1])
@@ -699,7 +828,7 @@ def to_latex(e):
                     s += "-"
             else:
                 s += " - " if minus else " + "
-            s += to_latex(body)
+            s += "(" + to_latex(body) + ")" if body.k == ADD else to_latex(body)
         return s
     if e.k == MUL:
         up, down = split_num_den(e)
@@ -731,6 +860,11 @@ def to_latex(e):
             bs = "(" + bs + ")"                        # (-2)^n を -2^n と書かない
         return bs + "^{" + to_latex(p) + "}"
     if e.k == FN:
+        if not e.kids:
+            return "\\" + e.name                     # \pi
+        # log は底を下付きで書く（log(a, x) -> \log_{a} x）
+        if e.name == "log" and len(e.kids) == 2:
+            return "\\log_{" + to_latex(e.kids[0]) + "} " + to_latex(e.kids[1])
         # Σ は sum(k, 1, n, 中身) の 4 引数で持ち、印字だけ数学の形にする
         if e.name == "sum" and len(e.kids) == 4:
             return ("\\sum_{" + to_latex(e.kids[0]) + "=" + to_latex(e.kids[1]) + "}^{" +
@@ -747,7 +881,7 @@ def to_latex(e):
 # ---------------------------------------------------------------- 構文解析
 
 
-FN_NAMES = ("sqrt", "frac", "mixed", "sin", "cos", "tan", "ln", "exp", "abs", "sum")
+FN_NAMES = ("sqrt", "frac", "mixed", "sin", "cos", "tan", "ln", "exp", "abs", "sum", "log")
 
 
 def is_fn_name(n):
@@ -921,6 +1055,9 @@ class Parser:
             while self.i < len(self.s) and self.s[self.i].isalpha():
                 name += self.s[self.i]
                 self.i += 1
+            # **円周率は定数**（p*i と読ませない）。2pi や pi/6 は掛け算・割り算として続く
+            if name == "pi":
+                return fn_e("pi", [])
             # **関数呼び出しは名前が関数のときだけ**。そうしないと `2x(x - 1)` の `x(...)` が
             # 「関数 x の呼び出し」になる（実写の写真でこの形が出て、答えが出せなかった）。
             if self.peek("(") and is_fn_name(name):
@@ -1032,6 +1169,10 @@ def approx(e):
     if e.k == POW:
         return approx(e.kids[0]) ** approx(e.kids[1])
     if e.k == FN:
+        if e.name == "pi":
+            return 3.14159265358979323846
+        if e.name == "log" and len(e.kids) == 2:
+            return math.log(approx(e.kids[1])) / math.log(approx(e.kids[0]))
         a = approx(e.kids[0]) if e.kids else 0.0
         return {"sin": math.sin, "cos": math.cos, "tan": math.tan, "ln": math.log,
                 "exp": math.exp, "abs": abs}.get(e.name, lambda x: x)(a)
@@ -1067,7 +1208,7 @@ def main():
     ap.add_argument("--latex", action="store_true")
     ap.add_argument("--approx", action="store_true")
     ap.add_argument("--no-expand", dest="no_expand", action="store_true")
-    a = ap.parse_args()
+    a = ap.parse_args(cli_argv(("--expr",)))
     e, err = parse(a.expr)
     if err:
         print("parse error: %s" % err)
