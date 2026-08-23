@@ -489,6 +489,24 @@ inline E fn_e(const std::string& name, std::vector<E> args) {
     E v;
     if (pi_coeff(args[0], c) && trig_exact(name, c, v)) return v;
   }
+  // 階乗・順列・組合せ（数学 A）。**値が決まるものだけ畳む**（n! は n が 0..20 の整数のとき。
+  // 21! は int64 に入らないので、そこは畳まずに残す）
+  if (name == "fact" && args.size() == 1 && is_num(args[0]) && args[0]->num.is_int() &&
+      args[0]->num.n >= 0 && args[0]->num.n <= 20) {
+    Rat v(1);
+    for (long long i = 2; i <= args[0]->num.n; ++i) v = v * Rat(i);
+    return num(v);
+  }
+  if ((name == "P" || name == "C") && args.size() == 2 && is_num(args[0]) && is_num(args[1]) &&
+      args[0]->num.is_int() && args[1]->num.is_int() && args[0]->num.n >= 0 &&
+      args[1]->num.n >= 0 && args[1]->num.n <= args[0]->num.n && args[0]->num.n <= 62) {
+    const long long n = args[0]->num.n, k = args[1]->num.n;
+    Rat v(1);
+    for (long long i = 0; i < k; ++i) v = v * Rat(n - i);       // nPr = n(n-1)...(n-k+1)
+    if (name == "C")
+      for (long long i = 2; i <= k; ++i) v = v / Rat(i);        // nCr = nPr / k!
+    return num(v);
+  }
   // exp と ln も逆の操作（exp(ln M) = M、ln(exp M) = M、log(a, a^M) = M）
   if (name == "exp" && args.size() == 1) {
     Rat k(1);
@@ -925,6 +943,9 @@ inline std::string to_latex(const E& e, int parent = 0) {
     }
     case Kind::Fn: {
       if (e->kids.empty()) return "\\" + e->name;    // \pi
+      if (e->name == "fact" && e->kids.size() == 1) return to_latex(e->kids[0], 4) + "!";
+      if ((e->name == "P" || e->name == "C") && e->kids.size() == 2)
+        return "{}_{" + to_latex(e->kids[0]) + "}" + e->name + "_{" + to_latex(e->kids[1]) + "}";
       // log は底を下付きで書く（log(a, x) -> \log_{a} x）
       if (e->name == "log" && e->kids.size() == 2)
         return "\\log_{" + to_latex(e->kids[0]) + "} " + to_latex(e->kids[1], 4);
@@ -962,7 +983,7 @@ inline std::string to_latex(const E& e, int parent = 0) {
 // 関数として扱う名前（これ以外の名前 + 括弧は掛け算）
 inline bool is_fn_name(const std::string& n) {
   return n == "sqrt" || n == "frac" || n == "mixed" || n == "sin" || n == "cos" || n == "tan" || n == "ln" || n == "exp" ||
-         n == "abs" || n == "sum" || n == "log";
+         n == "abs" || n == "sum" || n == "log" || n == "fact" || n == "P" || n == "C";
 }
 
 struct Parser {
@@ -1067,6 +1088,12 @@ struct Parser {
   E parse_pow() {
     E b = parse_atom();
     ws();
+    // **後置の階乗**（5! と書く）。^ より先に付く（3!^2 は (3!)^2）
+    while (peek('!')) {
+      eat('!');
+      b = raw ? un("op_fact", b) : fn_e("fact", {b});
+      ws();
+    }
     if (eat('^')) return bin("op_pow", b, parse_unary());   // 右結合
     return b;
   }

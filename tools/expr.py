@@ -572,6 +572,25 @@ def fn_e(name, args):
             v = trig_exact(name, c)
             if v is not None:
                 return v
+    # 階乗・順列・組合せ（数学 A）。**値が決まるものだけ畳む**（n! は n が 0..20 の整数のとき。
+    # 21! は int64 に入らないので、そこは畳まずに残す。Python は多倍長だが C++ に合わせる）
+    if (name == "fact" and len(args) == 1 and is_num(args[0]) and args[0].num.is_int()
+            and 0 <= args[0].num.n <= 20):
+        v = Rat(1)
+        for i in range(2, args[0].num.n + 1):
+            v = v * Rat(i)
+        return num(v)
+    if (name in ("P", "C") and len(args) == 2 and is_num(args[0]) and is_num(args[1])
+            and args[0].num.is_int() and args[1].num.is_int() and args[0].num.n >= 0
+            and 0 <= args[1].num.n <= args[0].num.n <= 62):
+        n_, k_ = args[0].num.n, args[1].num.n
+        v = Rat(1)
+        for i in range(k_):
+            v = v * Rat(n_ - i)                      # nPr = n(n-1)...(n-k+1)
+        if name == "C":
+            for i in range(2, k_ + 1):
+                v = v / Rat(i)                       # nCr = nPr / k!
+        return num(v)
     # exp と ln も逆の操作（exp(ln M) = M、ln(exp M) = M、log(a, a^M) = M）
     if name == "exp" and len(args) == 1:
         k, core = Rat(1), args[0]
@@ -911,6 +930,10 @@ def to_latex(e):
     if e.k == FN:
         if not e.kids:
             return "\\" + e.name                     # \pi
+        if e.name == "fact" and len(e.kids) == 1:
+            return to_latex(e.kids[0]) + "!"
+        if e.name in ("P", "C") and len(e.kids) == 2:
+            return "{}_{" + to_latex(e.kids[0]) + "}" + e.name + "_{" + to_latex(e.kids[1]) + "}"
         # log は底を下付きで書く（log(a, x) -> \log_{a} x）
         if e.name == "log" and len(e.kids) == 2:
             return "\\log_{" + to_latex(e.kids[0]) + "} " + to_latex(e.kids[1])
@@ -930,7 +953,8 @@ def to_latex(e):
 # ---------------------------------------------------------------- 構文解析
 
 
-FN_NAMES = ("sqrt", "frac", "mixed", "sin", "cos", "tan", "ln", "exp", "abs", "sum", "log")
+FN_NAMES = ("sqrt", "frac", "mixed", "sin", "cos", "tan", "ln", "exp", "abs", "sum",
+            "log", "fact", "P", "C")
 
 
 def is_fn_name(n):
@@ -1065,6 +1089,11 @@ class Parser:
     def parse_pow(self):
         b = self.parse_atom()
         self.ws()
+        # **後置の階乗**（5! と書く）。^ より先に付く（3!^2 は (3!)^2）
+        while self.peek("!"):
+            self.eat("!")
+            b = self.un("op_fact", b) if self.raw else fn_e("fact", [b])
+            self.ws()
         if self.eat("^"):
             return self.bin("op_pow", b, self.parse_unary())        # 右結合
         return b

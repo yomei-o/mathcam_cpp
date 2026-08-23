@@ -23,6 +23,7 @@
 #include "factor.hpp"
 #include "curve.hpp"
 #include "limit.hpp"
+#include "area.hpp"
 #include "typeset_impl.hpp"
 #include "gen_expr.hpp"
 #include "parse_layout.hpp"
@@ -441,6 +442,43 @@ static int cmd_limit(int argc, char** argv) {
       printf("%zu. [%s] %s\n   %s\n", i + 1, r.steps[i].rule.c_str(), r.steps[i].note.c_str(),
              (latex ? ex::to_latex(r.steps[i].after) : ex::to_infix(r.steps[i].after)).c_str());
   for (const std::string& line : lim::answer_lines(r, latex)) printf("%s\n", line.c_str());
+  return r.ok ? 0 : 1;
+}
+
+// mathcam area — 囲まれた面積（定積分の応用）
+static int cmd_area(int argc, char** argv) {
+  const std::string s1 = arg_of(argc, argv, "--expr", "");
+  const std::string s2 = arg_of(argc, argv, "--and", "0");
+  const std::string var = arg_of(argc, argv, "--var", "");
+  const std::string from = arg_of(argc, argv, "--from", "");
+  const std::string to = arg_of(argc, argv, "--to", "");
+  const bool steps = has_flag(argc, argv, "--steps");
+  const bool latex = has_flag(argc, argv, "--latex");
+  if (s1.empty()) {
+    printf("usage: mathcam area --expr \"x^2\" --and \"x\" [--steps]        (2 曲線で囲む)\n"
+           "       mathcam area --expr \"x^2 - 1\" --from 0 --to 2         (x 軸との面積)\n");
+    return 1;
+  }
+  std::string why;
+  const ex::E f = ex::parse(s1, &why);
+  if (!why.empty()) { printf("parse error: %s\n", why.c_str()); return 1; }
+  const ex::E g = ex::parse(s2, &why);
+  if (!why.empty()) { printf("parse error(--and): %s\n", why.c_str()); return 1; }
+  ex::E lo, hi;
+  if (!from.empty()) {
+    lo = ex::parse(from, &why);
+    if (!why.empty()) { printf("parse error(--from): %s\n", why.c_str()); return 1; }
+  }
+  if (!to.empty()) {
+    hi = ex::parse(to, &why);
+    if (!why.empty()) { printf("parse error(--to): %s\n", why.c_str()); return 1; }
+  }
+  const area::Result r = area::area(f, g, var, lo, hi);
+  if (steps)
+    for (size_t i = 0; i < r.steps.size(); ++i)
+      printf("%zu. [%s] %s\n   %s\n", i + 1, r.steps[i].rule.c_str(), r.steps[i].note.c_str(),
+             (latex ? ex::to_latex(r.steps[i].after) : ex::to_infix(r.steps[i].after)).c_str());
+  for (const std::string& line : area::answer_lines(r, latex)) printf("%s\n", line.c_str());
   return r.ok ? 0 : 1;
 }
 
@@ -1152,7 +1190,7 @@ int main(int argc, char** argv) {
   }
 #endif
   if (argc < 2) {
-    printf("usage: mathcam <eval|solve|diff|integ|sum|seq|factor|curve|limit|render|dataset|parse|selftest|photo> ...\n");
+    printf("usage: mathcam <eval|solve|diff|integ|sum|seq|factor|curve|limit|area|render|dataset|parse|selftest|photo> ...\n");
     return 1;
   }
   const std::string cmd = argv[1];
@@ -1166,6 +1204,7 @@ int main(int argc, char** argv) {
   if (cmd == "factor") return cmd_factor(argc, argv);
   if (cmd == "curve") return cmd_curve(argc, argv);
   if (cmd == "limit") return cmd_limit(argc, argv);
+  if (cmd == "area") return cmd_area(argc, argv);
   if (cmd == "render") return cmd_render(argc, argv);
   if (cmd == "dataset") return cmd_dataset(argc, argv);
   if (cmd == "genexpr") return cmd_genexpr(argc, argv);
