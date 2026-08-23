@@ -52,27 +52,8 @@ class Sum:
 # ---------------------------------------------------------------- 因数分解（答えの見た目）
 
 
-def llgcd(a, b):
-    a, b = abs(a), abs(b)
-    while b:
-        a, b = b, a % b
-    return a
-
-
-def divisors(v):
-    v = abs(v)
-    if v == 0:
-        return [1]
-    out = []
-    d = 1
-    while d * d <= v:
-        if v % d == 0:
-            out.append(d)
-            if d != v // d:
-                out.append(v // d)
-        d += 1
-    out.sort()
-    return out
+llgcd = X.llgcd                                      # 道具は expr.py に置いてある
+divisors = X.divisors                                # （solve.py からも使うため）
 
 
 def factor_poly(c, var):

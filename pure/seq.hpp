@@ -54,23 +54,8 @@ struct Sum {
 
 // ---------------------------------------------------------------- 因数分解（答えの見た目）
 
-inline long long llgcd(long long a, long long b) {
-  if (a < 0) a = -a;
-  if (b < 0) b = -b;
-  while (b) { const long long t = a % b; a = b; b = t; }
-  return a;
-}
-
-inline void divisors(long long v, std::vector<long long>& out) {
-  if (v < 0) v = -v;
-  if (v == 0) { out.push_back(1); return; }
-  for (long long d = 1; d * d <= v; ++d)
-    if (v % d == 0) {
-      out.push_back(d);
-      if (d != v / d) out.push_back(v / d);
-    }
-  std::sort(out.begin(), out.end());
-}
+using ex::divisors;                                  // 道具は expr.hpp に置いてある
+using ex::llgcd;                                     // （solve.hpp からも使うため）
 
 // 係数の並び（低次から）を「有理数 × 一次式の積 × 残り」に直す。
 // 有理根定理で根を**小さい分母・小さい分子から順に**探す（並べる順を決めておかないと

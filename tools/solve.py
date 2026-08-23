@@ -66,6 +66,10 @@ class Solution:
         # **二次不等式は答えが 2 つの範囲になる**（x < 2 または x > 3）。1 本で済むときは
         # 上の lo/hi を使い、2 本以上のときだけこちらに入れる（C++ の Solution::ranges と同じ）
         self.ranges = []
+        # **複素数解**（判別式が負のとき）。実部と虚部の組で持つ。
+        # 虚数単位を式木の定数にはしない: `i` は Σ の添字にも使う普通の文字で、パーサで
+        # 定数にすると sum(i, 1, n, i^2) が読めなくなる。答えの文字列だけで組む。
+        self.croots = []
 
 
 def poly_coeffs(e, var, out):
@@ -204,6 +208,65 @@ def move_note(L, R, var):
 
 
 # ---------------------------------------------------------------- 方程式
+
+
+def rational_roots(c_in):
+    """多項式（低次から）の**有理数の解を全部**取り出す。(解の並び, 残りの多項式) か None。
+
+    有理根定理: 解 p/q は p が定数項の約数、q が最高次係数の約数。
+    探す順（分母の小さい順 -> 分子の小さい順 -> 符号）を決めてあるので、両言語で同じ答え。
+    """
+    c = list(c_in)
+    while len(c) > 1 and c[-1].is_zero():
+        c.pop()
+    if len(c) < 2:
+        return None
+    L = 1                                            # 分母を払って整数係数にする
+    for q in c:
+        L = L // X.llgcd(L, q.d) * q.d
+    a = [q.n * (L // q.d) for q in c]
+    out = []
+    while True:
+        if len(a) <= 2:
+            break                                    # 1 次まで落ちたら終わり
+        if a[0] == 0:
+            out.append(X.Rat(0))
+            a = a[1:]
+            continue
+        qs, ps = X.divisors(a[-1]), X.divisors(a[0])
+        found = False
+        for q in qs:
+            for p0 in ps:
+                for sg in (1, -1):
+                    p = sg * p0
+                    if X.llgcd(p, q) != 1:
+                        continue
+                    v, pw = X.Rat(0), X.Rat(1)
+                    rt = X.Rat(p, q)
+                    for i in range(len(a)):
+                        v = v + X.Rat(a[i]) * pw
+                        pw = pw * rt
+                    if not v.is_zero():
+                        continue
+                    d = len(a) - 1                   # (q x - p) で割る
+                    b = [0] * d
+                    b[d - 1] = a[d] // q
+                    for i in range(d - 1, 0, -1):
+                        b[i - 1] = (a[i] + p * b[i]) // q
+                    out.append(rt)
+                    a = b
+                    found = True
+                    break
+                if found:
+                    break
+            if found:
+                break
+        if not found:
+            break
+    if len(a) == 2:                                  # 1 次が残ったら、それも解
+        out.append(X.Rat(-a[0], a[1]))
+        a = [1]
+    return (out, [X.Rat(v) for v in a])
 
 
 def has_v(e, var):
@@ -354,6 +417,15 @@ def solve_eq(e_in, want_var="", depth=0):
         if disc.neg():
             s.steps.append(Step("判別式",
                                 "D = b^2 - 4ac = %s < 0 なので実数解はない" % disc, norm, norm))
+            # 数学 II の範囲では複素数解を答える。sqrt(-D) を虚部にまわす
+            im = X.simp(X.mul_n([X.fn_e("sqrt", [X.num(-disc)]),
+                                 X.pow_e(X.num(X.Rat(2) * a), X.num(-1))]))
+            re = X.simp(X.mul_n([X.num(-b), X.pow_e(X.num(X.Rat(2) * a), X.num(-1))]))
+            s.steps.append(Step("複素数の範囲で解く",
+                                "sqrt(%s) を i でくくり出して x = (-b ± sqrt(-D) i) / (2a)" % (-disc),
+                                norm, norm))
+            s.croots.append((re, im))
+            s.croots.append((re, X.simp(X.neg(im))))
             s.ok = True
             return s
 
@@ -368,6 +440,69 @@ def solve_eq(e_in, want_var="", depth=0):
         if not X.equal(r1, r2):
             s.roots.append(r2)
         s.ok = True
+        return s
+
+    # 3 次以上: まず**因数定理**で 1 次因数に分ける（解が多く出るほうを先に試す）
+    norm = X.eq(from_coeffs(c, s.var), X.num(0))
+    got = rational_roots(c)
+    if got is not None and got[0]:
+        lin, rest = got
+        fs = [X.add_n([x, X.num(-q)]) if q.d == 1 else
+              X.add_n([X.mul_n([X.num(q.d), x]), X.num(-X.Rat(q.n))]) for q in lin]
+        remain = from_coeffs(rest, s.var)
+        allf = list(fs)
+        if not (X.is_num(remain) and remain.num.is_one()):
+            allf.append(remain)
+        factored = allf[0] if len(allf) == 1 else X.mul_n(allf)
+        s.steps.append(Step("因数定理", "代入して 0 になる値から 1 次因数を見つける",
+                            norm, X.eq(factored, X.num(0))))
+        s.steps.append(Step("積が 0", "積が 0 になるのは、どれかの因数が 0 のとき",
+                            X.eq(factored, X.num(0)), X.eq(factored, X.num(0))))
+        for q in lin:
+            if not any(X.is_num(t) and t.num == q for t in s.roots):
+                s.roots.append(X.num(q))
+        while len(rest) > 1 and rest[-1].is_zero():
+            rest.pop()
+        if len(rest) == 3:
+            s2 = solve_eq(X.eq(from_coeffs(rest, s.var), X.num(0)), s.var, depth + 1)
+            if s2.ok:
+                s.steps.extend(s2.steps)
+                for t in s2.roots:
+                    if not any(X.equal(t, u) for u in s.roots):
+                        s.roots.append(t)
+                s.croots.extend(s2.croots)
+        elif len(rest) > 3:
+            s.steps.append(Step("残りの因数",
+                                "%s = 0 は 3 次以上なのでここまで" % X.to_infix(remain),
+                                norm, norm))
+        s.ok = True
+        s.kind = "polynomial"
+        return s
+
+    # 有理数の解が無かったとき: **x^n = k の形**（2 項式）なら n 乗根をとる
+    if all(c[i].is_zero() for i in range(1, len(c) - 1)) and not c[deg].is_zero():
+        k = -c[0] / c[deg]
+        keq = X.eq(X.pow_e(x, X.num(deg)), X.num(k))
+        s.steps.append(Step("移項", "x^%d = %s の形にする" % (deg, k), norm, keq))
+        s.ok = True
+        s.kind = "polynomial"
+        odd = deg % 2 == 1
+        if k.is_zero():
+            s.steps.append(Step("n 乗根をとる", "0 の n 乗根は 0", keq, X.eq(x, X.num(0))))
+            s.roots.append(X.num(0))
+            return s
+        if not odd and k.neg():
+            s.steps.append(Step("n 乗根をとる", "偶数乗が負になる実数は無い", keq, keq))
+            return s                                 # 実数解なし
+        ak = -k if k.neg() else k
+        root = X.pow_e(X.num(ak), X.num(X.Rat(1, deg)))
+        s.steps.append(Step("n 乗根をとる", "%d 乗して %s になる数を求める" % (deg, k), keq,
+                            X.eq(x, X.neg(root) if k.neg() else root)))
+        if odd:
+            s.roots.append(X.simp(X.neg(root)) if k.neg() else root)
+        else:
+            s.roots.append(root)
+            s.roots.append(X.simp(X.neg(root)))
         return s
 
     s.why = "3 次以上は未対応"
@@ -1223,6 +1358,29 @@ def answer_lines(s, latex=False):
         return [range_text(s, latex)]
     if s.kind == "system":
         return ["%s = %s" % (v, show_e(s.vals[i], latex)) for i, v in enumerate(s.vars)]
+    # 複素数解（判別式が負）。**虚数単位は文字列で組む**（式木の定数にはしない）。
+    # 実数解と一緒に出す（x^3 + 1 = 0 の答えは -1 と (1 ± sqrt(3) i)/2 の 3 つ）
+    if s.croots:
+        out = [] if s.roots else ["実数解なし"]
+        out += ["%s = %s" % (s.var, show_e(rt, latex)) for rt in s.roots]
+        for re, im in s.croots:
+            t = "%s = " % s.var
+            re0 = X.is_num(re) and re.num.is_zero()
+            if not re0:
+                t += show_e(re, latex)
+            neg = X.approx(im) < 0
+            ia = X.simp(X.neg(im)) if neg else im
+            ims = show_e(ia, latex)
+            # 括弧が要るのは「/ を含む形」と「和」と「分数」だけ（sqrt(3)i はそのままでよい）
+            if ia.k in (X.ADD, X.MUL) or (X.is_num(ia) and not ia.num.is_int()):
+                ims = "(" + ims + ")"
+            if not re0:
+                t += " - " if neg else " + "
+            elif neg:
+                t += "-"
+            t += ("" if ims == "1" else ims) + "i"
+            out.append(t)
+        return out
     if s.kind == "trig" and not s.roots:
         return ["0 <= %s < 2pi に解はありません" % s.var]
     if not s.roots:

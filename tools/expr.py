@@ -412,6 +412,31 @@ def pow_e(b_in, e_in):
     return raw(POW, [b, p])
 
 
+def llgcd(a, b):
+    """最大公約数（負も受ける）。"""
+    a, b = abs(a), abs(b)
+    while b:
+        a, b = b, a % b
+    return a
+
+
+def divisors(v):
+    """約数を**小さい順**に並べる（有理根定理で根を探す順を決めるのに使う）。"""
+    v = abs(v)
+    if v == 0:
+        return [1]
+    out = []
+    d = 1
+    while d * d <= v:
+        if v % d == 0:
+            out.append(d)
+            if d != v // d:
+                out.append(v // d)
+        d += 1
+    out.sort()
+    return out
+
+
 def iroot(v, k):
     """v の k 乗根が整数なら返す（対数の底を見つけるのに使う）。C++ の iroot と同じ。"""
     if v < 0 or k <= 0:
@@ -838,7 +863,9 @@ def to_latex(e):
     if e.k == NUM:
         if e.num.is_int():
             return str(e.num)
-        return "\\frac{%d}{%d}" % (e.num.n, e.num.d)
+        # **負の分数はマイナスを前に出す**（-1/2 は \frac{-1}{2} ではなく -\frac{1}{2}）
+        f = "\\frac{%d}{%d}" % (abs(e.num.n), e.num.d)
+        return "-" + f if e.num.neg() else f
     if e.k == SYM:
         return e.name
     if e.k == ADD:

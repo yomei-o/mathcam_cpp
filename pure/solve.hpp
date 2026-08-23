@@ -59,6 +59,11 @@ struct Solution {
   // **二次不等式は答えが 2 つの範囲になる**（x < 2 または x > 3）。1 本で済むときは
   // 上の lo/hi をそのまま使い、2 本以上のときだけこちらに入れる（表示は range_text が見る）。
   std::vector<Range> ranges;
+
+  // **複素数解**（判別式が負のとき）。実部と虚部の組で持つ。
+  // 虚数単位を式木の定数にはしない: `i` は Σ の添字にも使う普通の文字で、パーサで
+  // 定数にすると sum(i, 1, n, i^2) が読めなくなる。答えの文字列だけで組む。
+  std::vector<std::pair<ex::E, ex::E>> croots;
 };
 
 // ---------------------------------------------------------------- 多項式として見る
@@ -253,6 +258,55 @@ inline bool lin_gen(const ex::E& e, const std::string& var, ex::Rat& p, ex::E& r
   return true;
 }
 
+// 多項式（低次から）の**有理数の解を全部**取り出す。out に解、rest に残りの多項式。
+// 有理根定理: 解 p/q は p が定数項の約数、q が最高次係数の約数。
+// 探す順（分母の小さい順 -> 分子の小さい順 -> 符号）を決めてあるので、両言語で同じ答えになる。
+inline bool rational_roots(const std::vector<ex::Rat>& c_in, std::vector<ex::Rat>& out,
+                           std::vector<ex::Rat>& rest) {
+  using namespace ex;
+  std::vector<Rat> c = c_in;
+  while (c.size() > 1 && c.back().is_zero()) c.pop_back();
+  if (c.size() < 2) return false;
+  long long L = 1;                                   // 分母を払って整数係数にする
+  for (const Rat& q : c) L = L / llgcd(L, q.d) * q.d;
+  std::vector<long long> a;
+  for (const Rat& q : c) a.push_back(q.n * (L / q.d));
+  out.clear();
+  for (;;) {
+    if (a.size() <= 2) break;                        // 1 次まで落ちたら終わり（残りに回す）
+    if (a[0] == 0) { out.push_back(Rat(0)); a.erase(a.begin()); continue; }
+    std::vector<long long> qs, ps;
+    divisors(a.back(), qs);
+    divisors(a[0], ps);
+    bool found = false;
+    for (size_t qi = 0; qi < qs.size() && !found; ++qi)
+      for (size_t pi = 0; pi < ps.size() && !found; ++pi)
+        for (int sg = 1; sg >= -1 && !found; sg -= 2) {
+          const long long q = qs[qi], p = sg * ps[pi];
+          if (llgcd(p, q) != 1) continue;
+          Rat v(0), pw(1);
+          const Rat rt(p, q);
+          for (size_t i = 0; i < a.size(); ++i) { v = v + Rat(a[i]) * pw; pw = pw * rt; }
+          if (!v.is_zero()) continue;
+          const size_t d = a.size() - 1;             // (q x - p) で割る
+          std::vector<long long> b(d, 0);
+          b[d - 1] = a[d] / q;
+          for (size_t i = d - 1; i >= 1; --i) b[i - 1] = (a[i] + p * b[i]) / q;
+          out.push_back(rt);
+          a = b;
+          found = true;
+        }
+    if (!found) break;
+  }
+  if (a.size() == 2) {                               // 1 次が残ったら、それも解
+    out.push_back(Rat(-a[0], a[1]));
+    a.assign(1, (long long)1);
+  }
+  rest.clear();
+  for (long long v : a) rest.push_back(Rat(v));
+  return true;
+}
+
 inline Solution solve_eq(const ex::E& in, const std::string& want_var, int depth) {
   using namespace ex;
   Solution r;
@@ -379,6 +433,14 @@ inline Solution solve_eq(const ex::E& in, const std::string& want_var, int depth
     if (disc.neg()) {
       push(r.steps, "判別式", "D = b^2 - 4ac = " + disc.str() + " < 0 なので実数解はない",
            norm, norm);
+      // 数学 II の範囲では複素数解を答える。sqrt(-D) を虚部にまわす
+      const E im = simp(mul_n({fn_e("sqrt", {num(-disc)}), pow_e(num(Rat(2) * a), num(Rat(-1)))}));
+      const E re = simp(mul_n({num(-b), pow_e(num(Rat(2) * a), num(Rat(-1)))}));
+      push(r.steps, "複素数の範囲で解く",
+           "sqrt(" + (-disc).str() + ") を i でくくり出して x = (-b ± sqrt(-D) i) / (2a)",
+           norm, norm);
+      r.croots.push_back({re, im});
+      r.croots.push_back({re, simp(neg(im))});
       r.ok = true;
       r.kind = "quadratic";
       return r;                                    // roots は空（実数解なし）
@@ -398,6 +460,90 @@ inline Solution solve_eq(const ex::E& in, const std::string& want_var, int depth
     return r;
   }
 
+  // 3 次以上: まず**因数定理**で 1 次因数に分ける（解が多く出るほうを先に試す）
+  {
+    const E norm = eq(from_coeffs(c, r.var), num(Rat(0)));
+    std::vector<Rat> rest;
+    std::vector<Rat> lin;                            // 見つかった有理数の解
+    if (rational_roots(c, lin, rest)) {
+      if (lin.empty()) goto try_binomial;              // 下の 2 項式の道へ
+      std::vector<E> fs;
+      for (const Rat& q : lin)
+        fs.push_back(q.d == 1 ? add_n({x, num(-q)})
+                              : add_n({mul_n({num(Rat(q.d)), x}), num(-Rat(q.n))}));
+      const E remain = from_coeffs(rest, r.var);
+      E factored;
+      {
+        std::vector<E> all = fs;
+        if (!(is_num(remain) && remain->num.is_one())) all.push_back(remain);
+        factored = all.size() == 1 ? all[0] : mul_n(all);
+      }
+      push(r.steps, "因数定理", "代入して 0 になる値から 1 次因数を見つける", norm,
+           eq(factored, num(Rat(0))));
+      push(r.steps, "積が 0", "積が 0 になるのは、どれかの因数が 0 のとき", eq(factored, num(Rat(0))),
+           eq(factored, num(Rat(0))));
+      for (const Rat& q : lin) {
+        bool dup = false;
+        for (const E& t : r.roots)
+          if (is_num(t) && t->num == q) { dup = true; break; }
+        if (!dup) r.roots.push_back(num(q));
+      }
+      // 残りが 2 次なら、そこも解く（解の公式か複素数）
+      while (rest.size() > 1 && rest.back().is_zero()) rest.pop_back();
+      if (rest.size() == 3) {
+        const Solution s2 = solve_eq(eq(from_coeffs(rest, r.var), num(Rat(0))), r.var, depth + 1);
+        if (s2.ok) {
+          for (const Step& st : s2.steps) r.steps.push_back(st);
+          for (const E& t : s2.roots) {
+            bool dup = false;
+            for (const E& u : r.roots)
+              if (equal(t, u)) { dup = true; break; }
+            if (!dup) r.roots.push_back(t);
+          }
+          for (const std::pair<E, E>& cr : s2.croots) r.croots.push_back(cr);
+        }
+      } else if (rest.size() > 3) {
+        push(r.steps, "残りの因数", to_infix(remain) + " = 0 は 3 次以上なのでここまで",
+             norm, norm);
+      }
+      r.ok = true;
+      r.kind = "polynomial";
+      return r;
+    }
+  }
+try_binomial:
+  // 有理数の解が無かったとき: **x^n = k の形**（2 項式）なら n 乗根をとる
+  {
+    bool binom = true;
+    for (size_t i = 1; i + 1 < c.size(); ++i)
+      if (!c[i].is_zero()) { binom = false; break; }
+    if (binom && !c[deg].is_zero()) {
+      const Rat k = -c[0] / c[deg];
+      const E norm = eq(from_coeffs(c, r.var), num(Rat(0)));
+      const E keq = eq(pow_e(x, num(Rat((long long)deg))), num(k));
+      push(r.steps, "移項", "x^" + std::to_string(deg) + " = " + k.str() + " の形にする", norm, keq);
+      r.ok = true;
+      r.kind = "polynomial";
+      const bool odd = deg % 2 == 1;
+      if (k.is_zero()) {
+        push(r.steps, "n 乗根をとる", "0 の n 乗根は 0", keq, eq(x, num(Rat(0))));
+        r.roots.push_back(num(Rat(0)));
+        return r;
+      }
+      if (!odd && k.neg()) {
+        push(r.steps, "n 乗根をとる", "偶数乗が負になる実数は無い", keq, keq);
+        return r;                                    // 実数解なし
+      }
+      const Rat ak = k.neg() ? -k : k;
+      const E root = pow_e(num(ak), num(Rat(1, (long long)deg)));
+      push(r.steps, "n 乗根をとる",
+           std::to_string(deg) + " 乗して " + k.str() + " になる数を求める", keq,
+           eq(x, k.neg() ? neg(root) : root));
+      if (odd) r.roots.push_back(k.neg() ? simp(neg(root)) : root);
+      else { r.roots.push_back(root); r.roots.push_back(simp(neg(root))); }
+      return r;
+    }
+  }
   r.why = "3 次以上は未対応";
   return r;
 }
@@ -1278,6 +1424,30 @@ inline std::vector<std::string> answer_lines(const Solution& s, bool latex = fal
   if (s.kind == "system") {
     for (size_t i = 0; i < s.vars.size(); ++i)
       out.push_back(s.vars[i] + " = " + show_e(s.vals[i], latex));
+    return out;
+  }
+  // 複素数解（判別式が負）。**虚数単位は文字列で組む**（式木の定数にはしない）。
+  // 実数解と一緒に出す（x^3 + 1 = 0 の答えは -1 と (1 ± sqrt(3) i)/2 の 3 つ）
+  if (!s.croots.empty()) {
+    if (s.roots.empty()) out.push_back("実数解なし");
+    for (const ex::E& rt : s.roots) out.push_back(s.var + " = " + show_e(rt, latex));
+    for (const std::pair<ex::E, ex::E>& cr : s.croots) {
+      std::string t = s.var + " = ";
+      const bool re0 = ex::is_num(cr.first) && cr.first->num.is_zero();
+      if (!re0) t += show_e(cr.first, latex);
+      const bool neg = ex::approx(cr.second) < 0;
+      const ex::E ia = neg ? ex::simp(ex::neg(cr.second)) : cr.second;
+      std::string ims = show_e(ia, latex);
+      // 分数や積のときは括弧でくくる（"sqrt(3)/2i" だと 2i で割ったように見える）
+      // 括弧が要るのは「/ を含む形」と「和」と「分数」だけ（sqrt(3)i はそのままでよい）
+      if (ia->k == ex::Kind::Add || ia->k == ex::Kind::Mul ||
+          (ex::is_num(ia) && !ia->num.is_int()))
+        ims = "(" + ims + ")";
+      if (!re0) t += neg ? " - " : " + ";
+      else if (neg) t += "-";
+      t += (ims == "1" ? "" : ims) + "i";
+      out.push_back(t);
+    }
     return out;
   }
   if (s.kind == "trig" && s.roots.empty()) {

@@ -350,6 +350,26 @@ inline E pow_e(const E& b_in, const E& e_in) {
   return raw(Kind::Pow, {b, p});
 }
 
+// 最大公約数（負も受ける）
+inline long long llgcd(long long a, long long b) {
+  if (a < 0) a = -a;
+  if (b < 0) b = -b;
+  while (b) { const long long t = a % b; a = b; b = t; }
+  return a;
+}
+
+// 約数を**小さい順**に並べる（有理根定理で根を探す順を決めるのに使う）
+inline void divisors(long long v, std::vector<long long>& out) {
+  if (v < 0) v = -v;
+  if (v == 0) { out.push_back(1); return; }
+  for (long long d = 1; d * d <= v; ++d)
+    if (v % d == 0) {
+      out.push_back(d);
+      if (d != v / d) out.push_back(v / d);
+    }
+  std::sort(out.begin(), out.end());
+}
+
 // v の k 乗根が整数なら true（対数の底を見つけるのに使う）
 inline bool iroot(long long v, long long k, long long& out) {
   if (v < 0 || k <= 0) return false;
@@ -838,9 +858,14 @@ inline std::string to_infix(const E& e, int parent) {
 // LaTeX。デモの表示と、学習データを描くレンダラの入力に使う
 inline std::string to_latex(const E& e, int parent = 0) {
   switch (e->k) {
-    case Kind::Num:
+    case Kind::Num: {
       if (e->num.is_int()) return e->num.str();
-      return "\\frac{" + std::to_string(e->num.n) + "}{" + std::to_string(e->num.d) + "}";
+      // **負の分数はマイナスを前に出す**（-1/2 は \frac{-1}{2} ではなく -\frac{1}{2}）
+      const bool ng = e->num.neg();
+      const std::string f = "\\frac{" + std::to_string(ng ? -e->num.n : e->num.n) + "}{" +
+                            std::to_string(e->num.d) + "}";
+      return ng ? "-" + f : f;
+    }
     case Kind::Sym: return e->name;
     case Kind::Add: {
       std::string s;
