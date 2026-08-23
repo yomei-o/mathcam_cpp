@@ -25,6 +25,7 @@
 #include "limit.hpp"
 #include "area.hpp"
 #include "trig.hpp"
+#include "recur.hpp"
 #include "typeset_impl.hpp"
 #include "gen_expr.hpp"
 #include "parse_layout.hpp"
@@ -503,6 +504,32 @@ static int cmd_trig(int argc, char** argv) {
       printf("%zu. [%s] %s\n   %s\n", i + 1, r.steps[i].rule.c_str(), r.steps[i].note.c_str(),
              (latex ? ex::to_latex(r.steps[i].after) : ex::to_infix(r.steps[i].after)).c_str());
   for (const std::string& line : trg::answer_lines(r, latex)) printf("%s\n", line.c_str());
+  return r.ok ? 0 : 1;
+}
+
+// mathcam recur — 漸化式から一般項を出す。--next に a_(n+1) の式を a と n で書く
+static int cmd_recur(int argc, char** argv) {
+  const std::string src = arg_of(argc, argv, "--next", "");
+  const std::string a1s = arg_of(argc, argv, "--a1", "");
+  const std::string var = arg_of(argc, argv, "--var", "n");
+  const bool steps = has_flag(argc, argv, "--steps");
+  const bool latex = has_flag(argc, argv, "--latex");
+  if (src.empty() || a1s.empty()) {
+    printf("usage: mathcam recur --next \"2a + 1\" --a1 1 [--steps] [--latex]\n"
+           "       --next は a_(n+1) の式を a（= a_n）と n で書く（`a + 3` `2a` `a + n`）\n");
+    return 1;
+  }
+  std::string why;
+  const ex::E e = ex::parse(src, &why);
+  if (!why.empty()) { printf("parse error: %s\n", why.c_str()); return 1; }
+  const ex::E a1 = ex::parse(a1s, &why);
+  if (!why.empty() || !ex::is_num(a1)) { printf("--a1 は数で書いてください\n"); return 1; }
+  const rec::Result r = rec::solve(e, a1->num, var);
+  if (steps)
+    for (size_t i = 0; i < r.steps.size(); ++i)
+      printf("%zu. [%s] %s\n   %s\n", i + 1, r.steps[i].rule.c_str(), r.steps[i].note.c_str(),
+             (latex ? ex::to_latex(r.steps[i].after) : ex::to_infix(r.steps[i].after)).c_str());
+  for (const std::string& line : rec::answer_lines(r, latex)) printf("%s\n", line.c_str());
   return r.ok ? 0 : 1;
 }
 
@@ -1214,7 +1241,7 @@ int main(int argc, char** argv) {
   }
 #endif
   if (argc < 2) {
-    printf("usage: mathcam <eval|solve|diff|integ|sum|seq|factor|curve|limit|area|trig|render|dataset|parse|selftest|photo> ...\n");
+    printf("usage: mathcam <eval|solve|diff|integ|sum|seq|factor|curve|limit|area|trig|recur|render|dataset|parse|selftest|photo> ...\n");
     return 1;
   }
   const std::string cmd = argv[1];
@@ -1230,6 +1257,7 @@ int main(int argc, char** argv) {
   if (cmd == "limit") return cmd_limit(argc, argv);
   if (cmd == "area") return cmd_area(argc, argv);
   if (cmd == "trig") return cmd_trig(argc, argv);
+  if (cmd == "recur") return cmd_recur(argc, argv);
   if (cmd == "render") return cmd_render(argc, argv);
   if (cmd == "dataset") return cmd_dataset(argc, argv);
   if (cmd == "genexpr") return cmd_genexpr(argc, argv);

@@ -71,6 +71,7 @@ python tools/parity/curve.py  --n 200  # 接線・極値・平方完成
 python tools/parity/limit.py  --n 200  # 極限
 python tools/parity/area.py   --n 150  # 面積
 python tools/parity/trig.py   --n 200  # 三角関数の変形（加法定理・2 倍角・合成）
+python tools/parity/recur.py  --n 200  # 漸化式（一般項を必ず検算する）
 python tools/parity/layout.py --n 300  # 枠 -> 式（レイアウト解析）と、組版 -> 解析の往復
 python tools/parity/photo.py  --n 20   # 写真 1 枚の道（自作ランタイム vs onnxruntime）
 ```
@@ -100,6 +101,8 @@ python tools/parity/photo.py  --n 20   # 写真 1 枚の道（自作ランタイ
 ./mathcam.exe sum --expr "sum(k, 1, n, 2^(k-1))"            # 2^(n) - 1（等比数列の和）
 ./mathcam.exe seq --terms "1, 2, 4, 7, 11" --steps          # 階差数列 -> a_n = (n^2 - n + 2)/2
 ./mathcam.exe seq --terms "3, 6, 12, 24" --nth 8            # 等比数列 -> 第 8 項 384
+./mathcam.exe recur --next "2a + 1" --a1 1 --steps          # 漸化式 -> a_n = 2^n - 1（特性方程式）
+./mathcam.exe recur --next "a + n" --a1 1                   # 階差型 -> a_n = (n^2 - n + 2)/2
 ```
 
 高校の残りもだいたい同じ 1 本で通る:
