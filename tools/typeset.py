@@ -180,9 +180,19 @@ def present(e, paren=False, st=None):
             return pn(FRAC, [present(X.num(1), False, st), present(inv, False, st)])
         return pn(SUP, [present(b, b.k in (X.ADD, X.MUL), st), present(p, False, st)])
     elif e.k == X.FN:
+        # **引数は全部描く**（"," 区切り）。1 つしか描かないと sum(k, 1, n, 中身) が
+        # "sum(k)" になる。Σ を大きな記号と上下の添字で描くのは認識側の仕事（クラスに
+        # Σ が無いので、勝手に字を増やすと学習データと食い違う）。いまは書いたとおりに描く。
         for c in e.name:
             row.append(pg(ord(c), c))
-        row.append(pn(PAREN, [present(e.kids[0] if e.kids else X.num(0), False, st)]))
+        args = []
+        for i, c in enumerate(e.kids):
+            if i:
+                args.append(pg(ord(","), ","))
+            args.append(present(c, False, st))
+        if not args:
+            args.append(present(X.num(0), False, st))
+        row.append(pn(PAREN, [pn(ROW, args)]))
     elif e.k == X.REL:
         # 演算子は name の 1 文字ずつを字として置く（"=" のときは以前と同じ絵）。
         # "<=" は暫定で '<' '=' の 2 字（本物の ≤ の字とクラス追加は認識側の仕事）

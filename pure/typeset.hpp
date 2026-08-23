@@ -220,9 +220,17 @@ inline P present(const ex::E& e, bool paren, const Style& st) {
                           present(p, false, st)});
     }
     case Kind::Fn: {
+      // **引数は全部描く**（"," 区切り）。1 つしか描かないと sum(k, 1, n, 中身) が
+      // "sum(k)" になる。Σ を大きな記号と上下の添字で描くのは認識側の仕事（クラスに
+      // Σ が無いので、勝手に字を増やすと学習データと食い違う）。いまは書いたとおりに描く。
       for (char c : e->name) row.push_back(pg(c, std::string(1, c)));
-      row.push_back(
-          pn(PK::Paren, {present(e->kids.empty() ? num(Rat(0)) : e->kids[0], false, st)}));
+      std::vector<P> args;
+      for (size_t i = 0; i < e->kids.size(); ++i) {
+        if (i) args.push_back(pg(',', ","));
+        args.push_back(present(e->kids[i], false, st));
+      }
+      if (args.empty()) args.push_back(present(num(Rat(0)), false, st));
+      row.push_back(pn(PK::Paren, {present_row(args)}));
       break;
     }
     case Kind::Rel:
