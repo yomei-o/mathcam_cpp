@@ -435,22 +435,36 @@ inline void fix_ones(std::vector<Sym>& v, int h_ref) {
 // "1" も l の候補として見る（fix_ones が 1 に寄せるより前にこれを走らせる）。
 inline void fix_fnnames(std::vector<Sym>& v) {
   using namespace ex;
-  const auto letter_of = [](const Sym& s) -> char {
-    if (s.atom) return 0;
-    if (s.cls.size() == 1 && isalpha((unsigned char)s.cls[0])) return s.cls[0];
-    if (s.cls == "t2") return 't';
-    if (s.cls == "1") return 'l';                     // l と 1 は同じ形（名前のときだけ）
-    return 0;
+  // 1 つの枠に対する**字の候補**（形が近いものを両方見る）。空なら名前の字ではない
+  const auto cands_of = [](const Sym& s) -> std::string {
+    if (s.atom) return "";
+    if (s.cls.size() == 1 && isalpha((unsigned char)s.cls[0])) return s.cls;
+    if (s.cls == "t2") return "t";
+    if (s.cls == "1") return "lt";                    // l も t も縦棒（実測: ln と tan で両方出た）
+    if (s.cls == "0") return "o";
+    if (s.cls == "5") return "s";
+    return "";
   };
   for (size_t j = 0; j < v.size(); ++j) {
     if (!v[j].atom || !v[j].from_paren) continue;     // すぐ左に名前が要る
-    size_t i = j;                                     // 英字の並びの先頭を探す
-    while (i > 0 && letter_of(v[i - 1])) --i;
+    size_t i = j;                                     // 名前になりうる字の並びの先頭を探す
+    while (i > 0 && !cands_of(v[i - 1]).empty()) --i;
+    if (j - i > 6) i = j - 6;                         // 長すぎる並びは後ろ 6 文字だけ見る
     if (j - i < 2) continue;                          // 1 文字の関数名は無い
     for (size_t k = i; k + 1 < j; ++k) {              // **後ろ寄りの綴りから試す**（x sin(x)）
       std::string name;
-      for (size_t m = k; m < j; ++m) name += letter_of(v[m]);
-      if (!is_fn_name(name) || name == "frac" || name == "mixed") continue;
+      {                                               // 候補の組み合わせを全部試す（高々 2^6）
+        std::vector<std::string> cs;
+        size_t total = 1;
+        for (size_t m = k; m < j; ++m) { cs.push_back(cands_of(v[m])); total *= cs.back().size(); }
+        for (size_t pick = 0; pick < total && name.empty(); ++pick) {
+          std::string t2;
+          size_t q = pick;
+          for (const std::string& c : cs) { t2 += c[q % c.size()]; q /= c.size(); }
+          if (is_fn_name(t2) && t2 != "frac" && t2 != "mixed") name = t2;
+        }
+      }
+      if (name.empty()) continue;
       const E e = fn_e(name, {v[j].e});
       Sym a = make_atom(e, v[k].x0, std::min(v[k].y0, v[j].y0), v[j].x1,
                         std::max(v[k].y1, v[j].y1), v[j].base_y);

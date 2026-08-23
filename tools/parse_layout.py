@@ -403,7 +403,8 @@ def fix_fnnames(v):
     `ln` の l は 1 と同じ形なので、検出器はほぼ必ず "1" と読む。**名前を綴るときだけ**
     "1" も l の候補として見る（fix_ones が 1 に寄せるより前にこれを走らせる）。
     """
-    def letter_of(sm):
+    def cands_of(sm):
+        """1 つの枠に対する**字の候補**（形が近いものを両方見る）。空なら名前の字ではない。"""
         if sm.atom:
             return ""
         if len(sm.cls) == 1 and sm.cls.isalpha():
@@ -411,7 +412,11 @@ def fix_fnnames(v):
         if sm.cls == "t2":
             return "t"
         if sm.cls == "1":
-            return "l"                               # l と 1 は同じ形（名前のときだけ）
+            return "lt"                              # l も t も縦棒（実測: ln と tan で両方出た）
+        if sm.cls == "0":
+            return "o"
+        if sm.cls == "5":
+            return "s"
         return ""
 
     v = list(v)
@@ -421,8 +426,10 @@ def fix_fnnames(v):
             j += 1
             continue
         i = j
-        while i > 0 and letter_of(v[i - 1]):         # 英字の並びの先頭を探す
+        while i > 0 and cands_of(v[i - 1]):          # 名前になりうる字の並びの先頭を探す
             i -= 1
+        if j - i > 6:                                # 長すぎる並びは後ろ 6 文字だけ見る
+            i = j - 6
         if j - i < 2:                                # 1 文字の関数名は無い
             j += 1
             continue
@@ -430,8 +437,20 @@ def fix_fnnames(v):
         for k in range(i, j - 1 + 1):                # **後ろ寄りの綴りから試す**（x sin(x)）
             if k + 1 > j - 1:
                 break
-            name = "".join(letter_of(v[m]) for m in range(k, j))
-            if not X.is_fn_name(name) or name in ("frac", "mixed"):
+            cs = [cands_of(v[m]) for m in range(k, j)]
+            total = 1
+            for c in cs:
+                total *= len(c)
+            name = ""
+            for pick in range(total):                # 候補の組み合わせを全部試す（高々 2^6）
+                t2, q = "", pick
+                for c in cs:
+                    t2 += c[q % len(c)]
+                    q //= len(c)
+                if X.is_fn_name(t2) and t2 not in ("frac", "mixed"):
+                    name = t2
+                    break
+            if not name:
                 continue
             a = make_atom(X.fn_e(name, [v[j].e]), v[k].x0, min(v[k].y0, v[j].y0), v[j].x1,
                           max(v[k].y1, v[j].y1), v[j].base_y)
