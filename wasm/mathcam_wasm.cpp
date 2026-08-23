@@ -16,6 +16,7 @@
 #include "pipeline.hpp"
 #include "solve.hpp"
 #include "arith.hpp"
+#include "factor.hpp"
 #include <emscripten/emscripten.h>
 #include <algorithm>
 #include <cstdio>
@@ -68,6 +69,14 @@ static std::string one_json(const pl::Result& r, const std::vector<pl::Sym>* sym
     const ex::E v = ex::expand(r.e);
     js += ",\"kind\":\"value\",\"answer\":[\"" + esc(ex::to_infix(v)) + "\"]";
     js += ",\"answer_latex\":[\"" + esc(ex::to_latex(v)) + "\"]";
+    // **文字が混ざる式は「因数分解せよ」のことが多い**（高校でいちばん多い問い方）
+    if (!vs0.empty()) {
+      const fac::Result fr = fac::factor(r.e);
+      if (fr.ok && fr.changed) {
+        js += ",\"factored\":\"" + esc(ex::to_infix(fr.value)) + "\"";
+        js += ",\"factored_latex\":\"" + esc(ex::to_latex(fr.value)) + "\"";
+      }
+    }
     // 割り切れる分数は小数でも返す（小学校の計算は小数で答える）
     if (ex::is_num(v) && !v->num.is_int()) {
       const std::string dec = ex::to_decimal(v->num);

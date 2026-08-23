@@ -31,7 +31,8 @@ T_DIGIT_GAP = 40        # 桁をつなぐ隙間の上限（高さに対する %�
 
 
 class Sym:
-    __slots__ = ("cls", "x0", "y0", "x1", "y1", "base_y", "atom", "from_frac", "score", "e")
+    __slots__ = ("cls", "x0", "y0", "x1", "y1", "base_y", "atom", "from_frac", "from_paren",
+                 "score", "e")
 
     def __init__(self, cls="", x0=0, y0=0, x1=0, y1=0, base_y=None, atom=False, e=None):
         self.cls = cls
@@ -40,6 +41,8 @@ class Sym:
         self.atom = atom
         # その原子が縦の分数だったか（帯分数 2 5/8 = 2 + 5/8 の判定に要る）
         self.from_frac = False
+        # **その原子が括弧の塊だったか**。関数呼び出し（sin(x)）の判定に要る
+        self.from_paren = False
         # 検出器の確からしさ（0..1）。式の読み方には使わない（表示と実験のため）
         self.score = 0.0
         self.e = e
@@ -64,6 +67,7 @@ class Sym:
         """
         s = Sym(self.cls, self.x0, self.y0, self.x1, self.y1, self.base_y, self.atom, self.e)
         s.from_frac = self.from_frac
+        s.from_paren = self.from_paren
         s.score = self.score
         return s
 
@@ -331,7 +335,9 @@ def collapse_one(v):
             uy0 = min(uy0, s.y0)
             uy1 = max(uy1, s.y1)
         out = list(v[:pi])
-        out.append(make_atom(e, ux0, uy0, ux1, uy1, run_baseline(inside)))
+        pa = make_atom(e, ux0, uy0, ux1, uy1, run_baseline(inside))
+        pa.from_paren = True                         # 関数呼び出しの判定に使う
+        out.append(pa)
         out.extend(v[pj + 1:])
         return True, out
     return False, v
@@ -386,6 +392,55 @@ def fix_ones(v, h_ref):
         for s in v:
             if (not s.atom) and s.cls == "l":
                 s.cls = "1"
+    return v
+
+
+def fix_fnnames(v):
+    """並んだ英字が関数の名前を綴っていて、すぐ右が括弧の塊なら**関数呼び出しにする**。
+
+    検出器は 1 字ずつしか出さないので `sin(x)` は s・i・n・( ・x・) として届く。掛け算として
+    組むと `i*n*s*x` になり、三角関数の問題が 1 つも解けない（実測）。
+    `ln` の l は 1 と同じ形なので、検出器はほぼ必ず "1" と読む。**名前を綴るときだけ**
+    "1" も l の候補として見る（fix_ones が 1 に寄せるより前にこれを走らせる）。
+    """
+    def letter_of(sm):
+        if sm.atom:
+            return ""
+        if len(sm.cls) == 1 and sm.cls.isalpha():
+            return sm.cls
+        if sm.cls == "t2":
+            return "t"
+        if sm.cls == "1":
+            return "l"                               # l と 1 は同じ形（名前のときだけ）
+        return ""
+
+    v = list(v)
+    j = 0
+    while j < len(v):
+        if not (v[j].atom and v[j].from_paren):      # すぐ左に名前が要る
+            j += 1
+            continue
+        i = j
+        while i > 0 and letter_of(v[i - 1]):         # 英字の並びの先頭を探す
+            i -= 1
+        if j - i < 2:                                # 1 文字の関数名は無い
+            j += 1
+            continue
+        hit = False
+        for k in range(i, j - 1 + 1):                # **後ろ寄りの綴りから試す**（x sin(x)）
+            if k + 1 > j - 1:
+                break
+            name = "".join(letter_of(v[m]) for m in range(k, j))
+            if not X.is_fn_name(name) or name in ("frac", "mixed"):
+                continue
+            a = make_atom(X.fn_e(name, [v[j].e]), v[k].x0, min(v[k].y0, v[j].y0), v[j].x1,
+                          max(v[k].y1, v[j].y1), v[j].base_y)
+            v = v[:k] + [a] + v[j + 1:]
+            j = k
+            hit = True
+            break
+        if not hit:
+            j += 1
     return v
 
 
@@ -565,6 +620,10 @@ def parse_flat(v_in):
         did, v = collapse_one(v)
         if not did:
             break
+
+    # 1.5) 関数名を戻す（sin(x) / cos(x) / ln(x)）。**fix_ones より前**にやる:
+    #      ln の l は検出器から "1" として届くので、1 に寄せられる前に名前として拾う
+    v = fix_fnnames(v)
 
     # 2) 桁をまとめる
     # 桁をまとめる前に、縦棒だけの `1` が `l` になっているのを戻す

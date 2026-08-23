@@ -66,8 +66,13 @@ def main():
     diff = round_bad = 0
     checked = 0
     tmp = os.path.join(tempfile.gettempdir(), "mathcam_layout_parity.txt")
-    for _ in range(a.n):
-        src = G.arith(rng) if a.arith else G.one(rng)
+    # **関数呼び出しは乱数の生成器が作らない**ので固定で足す（sin(x) は s・i・n・( ・x・) の
+    # 6 個として届き、名前に戻すのは解析側の仕事。両言語で同じに戻るかを縛る）
+    FIXED = [] if a.arith else ["sin(x) = 1/2", "cos(x) + 1", "ln(x) = 0", "x*sin(x)",
+                                "sin(x + 1)", "2*cos(2*x)", "sqrt(x) + sin(x)"]
+    for _i in range(a.n + len(FIXED)):
+        src = (FIXED[_i] if _i < len(FIXED) else
+               (G.arith(rng) if a.arith else G.one(rng)))
         e, err = X.parse(src)
         if err:
             continue

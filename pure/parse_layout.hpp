@@ -38,6 +38,8 @@ struct Sym {
   // **その原子が縦の分数だったか**。帯分数（2 5/8 = 2 + 5/8）の判定に要る。
   // 数のすぐ右に分数が来たら、掛け算ではなく足し算になる（小学校の書き方）。
   bool from_frac = false;
+  // **その原子が括弧の塊だったか**。関数呼び出し（sin(x)）の判定に要る。
+  bool from_paren = false;
   // 検出器が付けた確からしさ（0..1）。**式の読み方には使わない**（表示と実験のため）。
   // ブラウザのデモで枠に出すと、どの記号が危ういのかがすぐ分かる。
   float score = 0.f;
@@ -366,7 +368,9 @@ inline bool collapse_one(std::vector<Sym>& v, std::string* why) {
       uy1 = std::max(uy1, s.y1);
     }
     std::vector<Sym> out(v.begin(), v.begin() + (long)pi);
-    out.push_back(make_atom(e, ux0, uy0, ux1, uy1, run_baseline(in)));
+    Sym pa = make_atom(e, ux0, uy0, ux1, uy1, run_baseline(in));
+    pa.from_paren = true;                             // 関数呼び出しの判定に使う
+    out.push_back(pa);
     for (size_t k = (size_t)pj + 1; k < v.size(); ++k) out.push_back(v[k]);
     v = out;
     return true;
@@ -421,6 +425,43 @@ inline void fix_ones(std::vector<Sym>& v, int h_ref) {
   if (arith_marks && has_l && !other_letter)
     for (Sym& s : v)
       if (!s.atom && s.cls == "l") s.cls = "1";
+}
+
+// 並んだ英字が関数の名前を綴っていて、すぐ右が括弧の塊なら**関数呼び出しにする**。
+//
+// 検出器は 1 字ずつしか出さないので `sin(x)` は s・i・n・( ・x・) として届く。掛け算として
+// 組むと `i*n*s*x` になり、三角関数の問題が 1 つも解けない（実測）。
+// `ln` の l は 1 と同じ形なので、検出器はほぼ必ず "1" と読む。**名前を綴るときだけ**
+// "1" も l の候補として見る（fix_ones が 1 に寄せるより前にこれを走らせる）。
+inline void fix_fnnames(std::vector<Sym>& v) {
+  using namespace ex;
+  const auto letter_of = [](const Sym& s) -> char {
+    if (s.atom) return 0;
+    if (s.cls.size() == 1 && isalpha((unsigned char)s.cls[0])) return s.cls[0];
+    if (s.cls == "t2") return 't';
+    if (s.cls == "1") return 'l';                     // l と 1 は同じ形（名前のときだけ）
+    return 0;
+  };
+  for (size_t j = 0; j < v.size(); ++j) {
+    if (!v[j].atom || !v[j].from_paren) continue;     // すぐ左に名前が要る
+    size_t i = j;                                     // 英字の並びの先頭を探す
+    while (i > 0 && letter_of(v[i - 1])) --i;
+    if (j - i < 2) continue;                          // 1 文字の関数名は無い
+    for (size_t k = i; k + 1 < j; ++k) {              // **後ろ寄りの綴りから試す**（x sin(x)）
+      std::string name;
+      for (size_t m = k; m < j; ++m) name += letter_of(v[m]);
+      if (!is_fn_name(name) || name == "frac" || name == "mixed") continue;
+      const E e = fn_e(name, {v[j].e});
+      Sym a = make_atom(e, v[k].x0, std::min(v[k].y0, v[j].y0), v[j].x1,
+                        std::max(v[k].y1, v[j].y1), v[j].base_y);
+      std::vector<Sym> out(v.begin(), v.begin() + (long)k);
+      out.push_back(a);
+      for (size_t m = j + 1; m < v.size(); ++m) out.push_back(v[m]);
+      v = out;
+      j = k;                                          // 詰めたので見直す
+      break;
+    }
+  }
 }
 
 inline void merge_digits(std::vector<Sym>& v) {
@@ -627,6 +668,10 @@ inline ex::E parse_flat(std::vector<Sym> v, std::string* why) {
     if (!why->empty()) return num(Rat(0));
   }
   if (!why->empty()) return num(Rat(0));
+
+  // 1.5) 関数名を戻す（sin(x) / cos(x) / ln(x)）。**fix_ones より前**にやる:
+  //      ln の l は検出器から "1" として届くので、1 に寄せられる前に名前として拾う
+  fix_fnnames(v);
 
   // 2) 桁をまとめる（その前に、縦棒だけの `1` が `l` になっているのを戻す）
   fix_ones(v, median_h(v));

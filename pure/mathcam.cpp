@@ -1470,6 +1470,13 @@ static int cmd_photo(int argc, char** argv) {
       printf("%s答え: %s\n", prefix,
              ares.ok ? ar::to_text(ares.value, dec_ok).c_str()
                      : ex::to_infix(ex::expand(ar::calc_side(r.e))).c_str());
+      // **文字が混ざる式は「因数分解せよ」のことが多い**（高校でいちばん多い問い方）。
+      // 分けられたときだけ足す（分けられないなら黙る）
+      if (!vs0.empty()) {
+        const fac::Result fr = fac::factor(r.e);
+        if (fr.ok && fr.changed)
+          printf("%s因数分解: %s\n", prefix, ex::to_infix(fr.value).c_str());
+      }
       return;
     }
     if (steps)

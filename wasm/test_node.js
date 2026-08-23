@@ -95,6 +95,7 @@ function decodePng(buf) {
   console.log('kind  :', res.kind, res.var || '');
   for (const s of (res.steps || [])) console.log('  [' + s.rule + ']', s.note, '->', s.after);
   console.log('answer:', (res.answer || []).join(', '));
+  if (res.factored) console.log('因数分解:', res.factored);
 
   // **行に切る道も検査する**（ブラウザの「行を自動で切って全部読む」が通る道）。
   // 入口が増えたのに検査が片方だけだと、片方だけ壊れていても気付けない。
