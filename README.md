@@ -13,7 +13,7 @@ Photomath のようなものを、**認識も計算も自前**で作る。姉妹
 | 部品 | 中身 | 状態 |
 |---|---|---|
 | ① 認識 | 写真 → 記号の検出 → **2 次元レイアウト解析** → 式木 | 合成データは通る（検出 mAP50 0.99、レイアウト解析 100%、**数式書体での端から端まで 92.5%（中学）/ 95.0%（小学校）**）。**実写の教科書は 32 問中 31 問**（始まりは 0 / 12。下の「実写はなぜ落ちたか」）。囲まずにページを渡す道は 19 / 32 |
-| ② 計算 | 式木を書き換えて答えを出す（厳密有理数の CAS） | **高校レベルまで**（一次・二次方程式、一次・二次不等式、連立方程式・連立不等式、**微分・積分**、**数列と Σ**。両言語 + パリティ 1170 件） |
+| ② 計算 | 式木を書き換えて答えを出す（厳密有理数の CAS） | **高校の全範囲に手が届く**（方程式・不等式・因数分解・三角関数・指数対数・数列と Σ・微分積分・極限・面積・複素数解・絶対値・場合の数。両言語 + パリティ 11 スイート） |
 | ③ 手順 | 「名前のついた書き換え」を並べて見せる | **完了**（移項・分母を払う・因数分解・解の公式・加減法・代入法・共通範囲・積の微分・合成関数・Σ の公式…） |
 
 **①より②を先に作る。** 理由は、②が決める式木が認識側の出力契約になるからで、
@@ -25,7 +25,7 @@ Photomath のようなものを、**認識も計算も自前**で作る。姉妹
 * **印刷数式から**始める（教科書・プリント・画面）。学習データは**自作の数式組版で無限に合成**でき、
   記号ごとの正解枠が副産物として得られる。手書き（CROHME）は後段。
 * 数学の範囲は **四則・分数・累乗根・一次方程式・二次方程式・一次不等式・連立方程式・連立不等式**
-  （中学レベル）から始めて、いまは **二次不等式・微分・積分・数列と Σ**（高校）まで来た。
+  （中学レベル）から始めて、いまは**高校の教科書に出る形**まで来た（下の一覧）。
   最初からそのつもりで CAS を作ってある（関数を式木に持つ、
   簡約を書き換え規則の表にする、正規形を厳密有理数で持つ）。
 * **手順表示は最初から。** 後付けは作り直しになる。
@@ -66,6 +66,10 @@ python tools/parity/expr.py   --n 900  # 正規形・LaTeX・往復不変（印�
 python tools/parity/solve.py  --n 200  # 手順の全行（規則名・説明・各段の式）と答え
 python tools/parity/calc.py   --n 200  # 微分・積分（手順つき）
 python tools/parity/seq.py    --n 200  # 数列と Σ（手順つき）
+python tools/parity/factor.py --n 200  # 因数分解（答えが元の式と等しいかも見る）
+python tools/parity/curve.py  --n 200  # 接線・極値・平方完成
+python tools/parity/limit.py  --n 200  # 極限
+python tools/parity/area.py   --n 150  # 面積
 python tools/parity/layout.py --n 300  # 枠 -> 式（レイアウト解析）と、組版 -> 解析の往復
 python tools/parity/photo.py  --n 20   # 写真 1 枚の道（自作ランタイム vs onnxruntime）
 ```
@@ -95,6 +99,36 @@ python tools/parity/photo.py  --n 20   # 写真 1 枚の道（自作ランタイ
 ./mathcam.exe sum --expr "sum(k, 1, n, 2^(k-1))"            # 2^(n) - 1（等比数列の和）
 ./mathcam.exe seq --terms "1, 2, 4, 7, 11" --steps          # 階差数列 -> a_n = (n^2 - n + 2)/2
 ./mathcam.exe seq --terms "3, 6, 12, 24" --nth 8            # 等比数列 -> 第 8 項 384
+```
+
+高校の残りもだいたい同じ 1 本で通る:
+
+```sh
+# 因数分解（数学 I）
+./mathcam.exe factor --expr "x^2 + 5x + 6"          # (x + 2)(x + 3)
+./mathcam.exe factor --expr "6x^2y + 9xy^2"         # 3xy(2x + 3y)
+./mathcam.exe factor --expr "x^3 - 6x^2 + 11x - 6"  # (x - 1)(x - 2)(x - 3)（因数定理）
+
+# 三角関数・指数対数（数学 II）
+./mathcam.exe eval  --expr "sin(pi/6) + cos(pi/3)"  # 1（特別角は厳密な値）
+./mathcam.exe eval  --expr "log(2, 8) + log(4, 8)"  # 9/2
+./mathcam.exe solve --expr "sin(x) = 1/2"           # x = pi/6, 5pi/6（0 <= x < 2pi）
+./mathcam.exe solve --expr "2^(x+1) = 4^x"          # x = 1
+./mathcam.exe solve --expr "log(2,x) + log(2,x-2) = 3"   # x = 4（真数条件で -2 を捨てる）
+
+# 高次方程式・複素数・絶対値
+./mathcam.exe solve --expr "x^3 + 1 = 0"            # x = -1, 1/2 ± (sqrt(3)/2)i
+./mathcam.exe solve --expr "|x - 1| < 2"            # -1 < x < 3
+
+# 微分の応用・極限・面積（数学 II / III）
+./mathcam.exe curve --expr "x^2 - 4x + 1"           # 平方完成・頂点・軸・最小値
+./mathcam.exe curve --expr "x^3 - 3x" --at 2        # 接線 y = 9x - 16、極大・極小
+./mathcam.exe limit --expr "(x^2 - 1)/(x - 1)" --to 1    # 2（0/0 を約分する）
+./mathcam.exe limit --expr "(2x^2 + 1)/(x^2 - x)" --to inf   # 2（最高次で割る）
+./mathcam.exe area  --expr "x^2" --and "x"          # 1/6（交点を求めて ∫(上 - 下)）
+
+# 場合の数（数学 A）
+./mathcam.exe eval --expr "C(10, 3) + 5!"           # 240
 ```
 
 ## 写真から解く（① 認識）
