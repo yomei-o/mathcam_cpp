@@ -46,7 +46,22 @@ static std::string arr(const std::vector<std::string>& v) {
 // syms を渡すと、計算問題のときに**小学校の順序の手順**も返す（畳まない木で読み直す）。
 static std::string one_json(const pl::Result& r, const std::vector<pl::Sym>* syms = nullptr) {
   if (!r.ok) return "\"error\":\"" + esc(r.why) + "\"";
-  std::string js = "\"expr\":\"" + esc(r.text) + "\",\"latex\":\"" + esc(ex::to_latex(r.e)) + "\"";
+  // **計算問題は「書かれたとおり」を見せる**（畳んだ木の印字だと答えの数が式の欄に出る）
+  std::string shown = r.text, shown_tex = ex::to_latex(r.e);
+  const bool is_rel = r.e->k == ex::Kind::Rel || r.e->k == ex::Kind::Sys;
+  std::vector<std::string> vs0;
+  ex::collect_syms(r.e, vs0);
+  if (syms && !is_rel && vs0.empty()) {
+    bool dec0 = false;
+    for (const pl::Sym& s0 : *syms)
+      if (s0.cls == "dot") dec0 = true;
+    const pl::Result rr0 = pl::parse_raw(*syms);
+    if (rr0.ok) {
+      shown = ar::to_text(rr0.e, dec0);
+      shown_tex = ar::to_latex_raw(rr0.e, dec0);
+    }
+  }
+  std::string js = "\"expr\":\"" + esc(shown) + "\",\"latex\":\"" + esc(shown_tex) + "\"";
   const slv::Solution sol = slv::solve(r.e);
   if (!sol.ok) {
     // 方程式でなければ計算問題として値を出す
@@ -132,7 +147,7 @@ EMSCRIPTEN_KEEPALIVE int mc_run(const unsigned char* rgba, int w, int h, int img
   }
   const pipeln::Detected det =
       pipeln::detect_syms(g_graph, rgb.data(), w, h, imgsz > 0 ? imgsz : 640,
-                          conf > 0.f ? conf : 0.25f, 0.45f, BoxFmt::CXCYWH);
+                          conf > 0.f ? conf : 0.20f, 0.45f, BoxFmt::CXCYWH);
 
   std::string js = "{\"count\":" + std::to_string(det.syms.size()) +
                    ",\"syms\":" + syms_json(det.syms);
@@ -167,7 +182,7 @@ EMSCRIPTEN_KEEPALIVE int mc_run_lines(const unsigned char* rgba, int w, int h, i
   }
   // 塊を 1 つ読むたびに進捗を返す（ページ 1 枚で 30 秒級。何も出ないと壊れて見える）
   const std::vector<pipeln::Cell> cells = pipeln::detect_by_cells(
-      g_graph, rgb.data(), w, h, imgsz > 0 ? imgsz : 640, conf > 0.f ? conf : 0.25f, 0.45f,
+      g_graph, rgb.data(), w, h, imgsz > 0 ? imgsz : 640, conf > 0.f ? conf : 0.20f, 0.45f,
       BoxFmt::CXCYWH, 35, 25,
       [](int done, int total, void*) {
         // **postMessage が無い所でも動くようにする**（node での検査は Worker ではない。

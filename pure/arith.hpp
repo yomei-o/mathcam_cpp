@@ -48,6 +48,10 @@ inline std::string to_text(const ex::E& e, bool dec_ok = false, int parent = 0) 
   if (e->k == Kind::Fn && e->name == "op_mixed" && e->kids.size() == 3)
     return to_text(e->kids[0], dec_ok, 5) + " " + to_text(e->kids[1], dec_ok, 5) + "/" +
            to_text(e->kids[2], dec_ok, 5);           // 帯分数は 1 つの数として書く
+  // 累乗はレイアウト解析が**本物の Pow** で作る（op_ ではない）。ここで折り返さないと
+  // 中の op_ が印字されない（"op_add(x, 1)^2" と出ていた）
+  if (e->k == Kind::Pow)
+    return to_text(e->kids[0], dec_ok, 5) + "^" + to_text(e->kids[1], dec_ok, 5);
   if (!is_op(e)) return to_infix(e);                  // 変数や根号が混ざったらそのまま
   const std::string& n = e->name;
   const int p = op_prec(n);
@@ -62,6 +66,43 @@ inline std::string to_text(const ex::E& e, bool dec_ok = false, int parent = 0) 
                                       : "^";
     // 左結合なので、右側は同じ優先順位でも括弧が要る（8 - (3 - 1) は 8 - 3 - 1 ではない）
     s = to_text(e->kids[0], dec_ok, p) + sym + to_text(e->kids[1], dec_ok, p + 1);
+  }
+  return p < parent ? "(" + s + ")" : s;
+}
+
+// 畳まない木の LaTeX（デモの表示用）。分数と帯分数は縦に組む
+inline std::string to_latex_raw(const ex::E& e, bool dec_ok = false, int parent = 0) {
+  using namespace ex;
+  if (e->k == Kind::Num) {
+    if (dec_ok) {
+      const std::string dec = to_decimal(e->num);
+      if (!dec.empty()) return dec;
+    }
+    if (e->num.is_int()) return e->num.str();
+    const bool neg = e->num.neg();
+    const std::string f = "\\frac{" + std::to_string(neg ? -e->num.n : e->num.n) + "}{" +
+                          std::to_string(e->num.d) + "}";
+    return neg ? "-" + f : f;
+  }
+  if (e->k == Kind::Fn && e->name == "op_mixed" && e->kids.size() == 3)
+    return to_latex_raw(e->kids[0], dec_ok, 5) + "\\frac{" + to_latex_raw(e->kids[1], false, 5) +
+           "}{" + to_latex_raw(e->kids[2], false, 5) + "}";
+  if (e->k == Kind::Pow)
+    return to_latex_raw(e->kids[0], dec_ok, 5) + "^{" + to_latex_raw(e->kids[1], dec_ok) + "}";
+  if (!is_op(e)) return to_latex(e);                  // 変数や根号が混ざったらそのまま
+  const std::string& n = e->name;
+  const int p = op_prec(n);
+  std::string s;
+  if (n == "op_neg") {
+    s = "-" + to_latex_raw(e->kids[0], dec_ok, p);
+  } else if (n == "op_pow") {
+    return to_latex_raw(e->kids[0], dec_ok, 5) + "^{" + to_latex_raw(e->kids[1], dec_ok) + "}";
+  } else {
+    const char* sym = n == "op_add"   ? " + "
+                      : n == "op_sub" ? " - "
+                      : n == "op_mul" ? " \\times "
+                                      : " \\div ";
+    s = to_latex_raw(e->kids[0], dec_ok, p) + sym + to_latex_raw(e->kids[1], dec_ok, p + 1);
   }
   return p < parent ? "(" + s + ")" : s;
 }

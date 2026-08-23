@@ -390,6 +390,15 @@ def pow_e(b_in, e_in):
                         if coef.is_one():
                             return rest
                         return mul_n([num(coef), rest])
+    # **a^(log_a M) = M**（指数と対数は逆の操作）。log(2, x) = log(2, 5) を解くと
+    # x = 2^(log_2 5) が出るので、ここで畳まないと答えが 5 にならない。
+    if is_num(b) and b.num.n > 0:
+        k, core = Rat(1), p
+        if core.k == MUL and len(core.kids) == 2 and is_num(core.kids[0]):
+            k, core = core.kids[0].num, core.kids[1]
+        if (core.k == FN and core.name == "log" and len(core.kids) == 2
+                and is_num(core.kids[0]) and core.kids[0].num == b.num):
+            return pow_e(core.kids[1], num(k))
     if b.k == POW:                                            # (a^m)^n = a^(mn)
         inner = b.kids[1]
         # **内側が整数でないなら畳んでよい**（内側が根なら底は 0 以上でしか定義されない）。
@@ -538,6 +547,19 @@ def fn_e(name, args):
             v = trig_exact(name, c)
             if v is not None:
                 return v
+    # exp と ln も逆の操作（exp(ln M) = M、ln(exp M) = M、log(a, a^M) = M）
+    if name == "exp" and len(args) == 1:
+        k, core = Rat(1), args[0]
+        if core.k == MUL and len(core.kids) == 2 and is_num(core.kids[0]):
+            k, core = core.kids[0].num, core.kids[1]
+        if core.k == FN and core.name == "ln" and len(core.kids) == 1:
+            return pow_e(core.kids[0], num(k))
+    if (name == "ln" and len(args) == 1 and args[0].k == FN and args[0].name == "exp"
+            and len(args[0].kids) == 1):
+        return args[0].kids[0]
+    if (name == "log" and len(args) == 2 and is_num(args[0]) and args[1].k == POW
+            and is_num(args[1].kids[0]) and args[1].kids[0].num == args[0].num):
+        return args[1].kids[1]
     if len(args) == 1 and is_num(args[0]):
         r = args[0].num
         if name == "abs":

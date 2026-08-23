@@ -45,7 +45,7 @@ def main():
     ap.add_argument("--dir", default="test_data")
     ap.add_argument("--key", default=os.path.join(ROOT, "tests", "real_photos.txt"))
     ap.add_argument("--model", default="models/sym_det_v5.onnx")
-    ap.add_argument("--conf", type=float, default=0.25)
+    ap.add_argument("--conf", type=float, default=0.20)
     ap.add_argument("--exe", default="")
     ap.add_argument("--only", default="", help="1 枚だけ測る")
     ap.add_argument("--crop", default="", help="その 1 枚の中の範囲（x0,y0,x1,y1）")

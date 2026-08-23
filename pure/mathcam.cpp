@@ -124,8 +124,10 @@ static int cmd_solve(int argc, char** argv) {
 
   const slv::Solution s = slv::solve(e, var);
   auto show = [&](const ex::E& x) { return latex ? ex::to_latex(x) : ex::to_infix(x); };
-  if (!s.ok) {
+  if (!s.ok && e->k != ex::Kind::Rel && e->k != ex::Kind::Sys) {
     // 方程式でないなら「計算問題」として、小学校の順序で 1 手ずつ計算する。
+    // **関係式のときはここに来ない**（解けない方程式を黙って echo すると、
+    // 「解けた」のか「読めなかった」のかが利用者にも Python 側にも分からなくなる）。
     // **畳まない木**で読み直すのが要点（ex::parse は 1.8 × 3.5 を先に畳んでしまう）
     std::string why2;
     const ex::E rawe = ex::parse_raw(src, &why2);
@@ -736,7 +738,7 @@ static int cmd_e2e(int argc, char** argv) {
   const std::string model_p = arg_of(argc, argv, "--model", "models/sym_det_v5.onnx");
   const std::string fontp = arg_of(argc, argv, "--font", "");
   const int imgsz = std::atoi(arg_of(argc, argv, "--imgsz", "640").c_str());
-  const float conf = (float)atof(arg_of(argc, argv, "--conf", "0.25").c_str());
+  const float conf = (float)atof(arg_of(argc, argv, "--conf", "0.20").c_str());
   const bool show = has_flag(argc, argv, "--show-fail");
   const std::string fontip = arg_of(argc, argv, "--font-italic", "");
   const ts::Style st = style_of(argc, argv);
@@ -805,7 +807,7 @@ static int cmd_photo(int argc, char** argv) {
   const std::string img_p = arg_of(argc, argv, "--img", "");
   const std::string model_p = arg_of(argc, argv, "--model", "models/sym_det_v5.onnx");
   const int imgsz = std::atoi(arg_of(argc, argv, "--imgsz", "640").c_str());
-  const float conf = (float)atof(arg_of(argc, argv, "--conf", "0.25").c_str());
+  const float conf = (float)atof(arg_of(argc, argv, "--conf", "0.20").c_str());
   const float nms = (float)atof(arg_of(argc, argv, "--nms", "0.45").c_str());
   const bool steps = has_flag(argc, argv, "--steps");
   const bool show_syms = has_flag(argc, argv, "--show-syms");
@@ -818,7 +820,7 @@ static int cmd_photo(int argc, char** argv) {
   const std::string save_crop = arg_of(argc, argv, "--save-crop", "");
   if (img_p.empty()) {
     printf("usage: mathcam photo --img x.png [--model models/sym_det_v5.onnx] [--steps]\n"
-           "                     [--crop x0,y0,x1,y1] [--save-crop crop.png] [--conf 0.25]\n");
+           "                     [--crop x0,y0,x1,y1] [--save-crop crop.png] [--conf 0.20]\n");
     return 1;
   }
   int w = 0, h = 0, ch = 0;
@@ -889,7 +891,19 @@ static int cmd_photo(int argc, char** argv) {
   auto show_one = [&](const pl::Result& r, const char* prefix,
                       const std::vector<pl::Sym>* sy) {
     if (!r.ok) { printf("%sレイアウト解析に失敗: %s\n", prefix, r.why.c_str()); return; }
-    printf("%s読めた式: %s\n", prefix, r.text.c_str());
+    // **計算問題は「書かれたとおり」を見せる**。畳んだ木を印字すると 1.8 × 3.5 - … が
+    // 「261/10」（＝答えの数）になり、読めた式の欄に答えが出ているように見える
+    std::string shown = r.text;
+    std::vector<std::string> vs0;
+    ex::collect_syms(r.e, vs0);
+    if (sy && vs0.empty() && r.e->k != ex::Kind::Rel && r.e->k != ex::Kind::Sys) {
+      bool dec2 = false;
+      for (const pl::Sym& s2 : *sy)
+        if (s2.cls == "dot") dec2 = true;
+      const pl::Result rr2 = pl::parse_raw(*sy);
+      if (rr2.ok) shown = ar::to_text(rr2.e, dec2);
+    }
+    printf("%s読めた式: %s\n", prefix, shown.c_str());
     slv::Solution sol = slv::solve(r.e);
     // **数だけの等式は計算問題として扱う**（プリントの「… = □」。四角が別の字として拾われて
     // `= 0` に見えることがあり、そのまま解くと「解なし（矛盾）」になってしまう）

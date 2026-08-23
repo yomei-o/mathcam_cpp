@@ -85,7 +85,7 @@ function decodePng(buf) {
   M.HEAPU8.set(rgba, p);
   const t0 = Date.now();
   const n = M.ccall('mc_run', 'number', ['number', 'number', 'number', 'number', 'number'],
-                    [p, w, h, 640, 0.25]);
+                    [p, w, h, 640, 0.20]);
   const ms = Date.now() - t0;
   M._free(p);
   const res = JSON.parse(M.UTF8ToString(M.ccall('mc_result', 'number', [], [])));
@@ -101,7 +101,7 @@ function decodePng(buf) {
   p = M._malloc(rgba.length);
   M.HEAPU8.set(rgba, p);
   const nl = M.ccall('mc_run_lines', 'number', ['number', 'number', 'number', 'number', 'number'],
-                     [p, w, h, 640, 0.25]);
+                     [p, w, h, 640, 0.20]);
   M._free(p);
   const resl = JSON.parse(M.UTF8ToString(M.ccall('mc_result', 'number', [], [])));
   console.log('cells :', (resl.lines || []).length, '塊、記号', nl);

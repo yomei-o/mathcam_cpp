@@ -212,7 +212,48 @@ inline void push(std::vector<Step>& steps, const std::string& rule, const std::s
 }
 
 // 変数 1 つの一次・二次方程式
-inline Solution solve_eq(const ex::E& in, const std::string& want_var = "") {
+// 指数・対数・三角の方程式（多項式に落ちないもの）。solve_eq から呼ぶ
+inline Solution solve_eq(const ex::E& in, const std::string& want_var = "", int depth = 0);
+inline bool solve_special(const ex::E& lhs, const ex::E& rhs, const std::string& var, int depth,
+                          Solution& r);
+
+// var を含むか
+inline bool has_v(const ex::E& e, const std::string& var) {
+  if (e->k == ex::Kind::Sym) return e->name == var;
+  for (const ex::E& k : e->kids)
+    if (has_v(k, var)) return true;
+  return false;
+}
+
+// e = p·var + rest（rest は var を含まない式）。三角・指数の中身をほどくのに使う
+inline bool lin_gen(const ex::E& e, const std::string& var, ex::Rat& p, ex::E& rest) {
+  using namespace ex;
+  p = Rat(0);
+  std::vector<E> ks;
+  std::vector<E> ts;
+  if (e->k == Kind::Add) ts = e->kids; else ts.push_back(e);
+  for (const E& t : ts) {
+    if (!has_v(t, var)) { ks.push_back(t); continue; }
+    if (t->k == Kind::Sym) { p = p + Rat(1); continue; }
+    if (t->k == Kind::Mul) {
+      Rat c(1);
+      int nv = 0;
+      for (const E& f : t->kids) {
+        if (is_num(f)) { c = c * f->num; continue; }
+        if (f->k == Kind::Sym && f->name == var) { ++nv; continue; }
+        return false;
+      }
+      if (nv != 1) return false;
+      p = p + c;
+      continue;
+    }
+    return false;
+  }
+  rest = ks.empty() ? num(Rat(0)) : add_n(ks);
+  return true;
+}
+
+inline Solution solve_eq(const ex::E& in, const std::string& want_var, int depth) {
   using namespace ex;
   Solution r;
 
@@ -233,7 +274,13 @@ inline Solution solve_eq(const ex::E& in, const std::string& want_var = "") {
   E diff = expand(sub(lhs, rhs));
 
   std::vector<Rat> c;
-  if (!poly_coeffs(diff, r.var, c)) { r.why = "一次・二次の多項式に落とせません"; return r; }
+  if (!poly_coeffs(diff, r.var, c)) {
+    // 多項式ではない: 指数・対数・三角の形なら、そちらの解き方に回す
+    if (depth < 4 && solve_special(lhs, rhs, r.var, depth, r)) return r;
+    if (!r.why.empty()) return r;                    // 解き方は分かったが解が無い等
+    r.why = "一次・二次の多項式に落とせません";
+    return r;
+  }
   while (c.size() > 1 && c.back().is_zero()) c.pop_back();
   const size_t deg = c.empty() ? 0 : c.size() - 1;
 
@@ -903,6 +950,260 @@ inline Solution solve_system(const std::vector<ex::E>& rels, const std::string& 
 
 // ---------------------------------------------------------------- 入口
 
+// ---------------------------------------------------------------- 指数・対数・三角の方程式
+
+// 「数の累乗」の形か（数そのものは指数 1 とみなす）
+inline bool as_power(const ex::E& e, ex::Rat& base, ex::E& expo) {
+  using namespace ex;
+  if (is_num(e)) {
+    if (e->num.n <= 0) return false;
+    base = e->num;
+    expo = num(Rat(1));
+    return true;
+  }
+  if (e->k == Kind::Pow && is_num(e->kids[0]) && e->kids[0]->num.n > 0) {
+    base = e->kids[0]->num;
+    expo = e->kids[1];
+    return true;
+  }
+  return false;
+}
+
+// 片側を「Σ ci·log(a, fi) + 定数」にまとめたもの
+struct LogSide {
+  bool has_log = false;
+  bool is_ln = false;
+  ex::Rat base;
+  ex::E arg;                     // Π fi^ci（log が無ければ 1）
+  ex::E konst;                   // var を含まない残り
+  std::vector<ex::E> args;       // 真数条件を確かめるための元の中身
+};
+
+// log a + log b = log ab、k log a = log a^k をまとめる（底がそろっているときだけ）
+inline bool merge_log_side(const ex::E& side, const std::string& var, LogSide& out) {
+  using namespace ex;
+  out.arg = num(Rat(1));
+  std::vector<E> ks;
+  std::vector<E> ts;
+  if (side->k == Kind::Add) ts = side->kids; else ts.push_back(side);
+  for (const E& t : ts) {
+    if (!has_v(t, var)) { ks.push_back(t); continue; }
+    Rat c(1);
+    E core = t;
+    if (t->k == Kind::Mul) {                         // 係数つき（2 log(x) など）
+      std::vector<E> rest;
+      for (const E& f : t->kids) {
+        if (is_num(f)) { c = c * f->num; continue; }
+        rest.push_back(f);
+      }
+      if (rest.size() != 1) return false;
+      core = rest[0];
+    }
+    if (!c.is_int()) return false;
+    if (core->k != Kind::Fn) return false;
+    bool ln_here = false;
+    E a;
+    if (core->name == "ln" && core->kids.size() == 1) { ln_here = true; a = core->kids[0]; }
+    else if (core->name == "log" && core->kids.size() == 2) {
+      if (!is_num(core->kids[0]) || core->kids[0]->num.n <= 0) return false;
+      if (out.has_log && (out.is_ln || !(out.base == core->kids[0]->num))) return false;
+      out.base = core->kids[0]->num;
+      a = core->kids[1];
+    } else return false;
+    if (out.has_log && out.is_ln != ln_here) return false;
+    out.is_ln = ln_here;
+    out.has_log = true;
+    out.args.push_back(a);
+    out.arg = mul_n({out.arg, pow_e(a, num(c))});
+  }
+  out.konst = ks.empty() ? num(Rat(0)) : add_n(ks);
+  return true;
+}
+
+inline bool solve_exp(const ex::E& lhs, const ex::E& rhs, const std::string& var, int depth,
+                      Solution& r) {
+  using namespace ex;
+  // **正の数の累乗は必ず正**（2^x = 0 や 2^x = -1 は解なし）。表を引く前に言う
+  for (int side = 0; side < 2; ++side) {
+    const E& a = side ? rhs : lhs;
+    const E& b = side ? lhs : rhs;
+    if (a->k != Kind::Pow || !is_num(a->kids[0]) || a->kids[0]->num.n <= 0) continue;
+    if (!has_v(a->kids[1], var) || !is_num(b) || b->num.n > 0) continue;
+    push(r.steps, "値の範囲", "正の数の累乗は必ず正なので、この値にはならない", eq(lhs, rhs),
+         eq(lhs, rhs));
+    r.ok = true;
+    r.kind = "empty";
+    return true;
+  }
+  Rat ba, bb;
+  E ea, eb;
+  if (!as_power(lhs, ba, ea) || !as_power(rhs, bb, eb)) return false;
+  if (!has_v(ea, var) && !has_v(eb, var)) return false;
+  Rat ra, rb;
+  long long ia = 0, ib = 0;
+  prim_pow(ba, ra, ia);
+  prim_pow(bb, rb, ib);
+  // **底をそろえられるなら指数どうしを比べる**（2^(x+1) = 4^x は 2 に寄せて x+1 = 2x）
+  if (ra == rb && !ra.is_one()) {
+    const E neq = eq(mul_n({num(Rat(ia)), ea}), mul_n({num(Rat(ib)), eb}));
+    push(r.steps, "底をそろえる", "両辺を " + ra.str() + " の累乗で表す", eq(lhs, rhs), neq);
+    push(r.steps, "指数を比べる", "底が同じなら指数どうしが等しい", neq, neq);
+    const Solution s2 = solve_eq(neq, var, depth + 1);
+    if (!s2.ok) return false;
+    for (const Step& st : s2.steps) r.steps.push_back(st);
+    r.roots = s2.roots;
+    r.ok = true;
+    r.kind = s2.kind == "identity" || s2.kind == "contradiction" ? s2.kind : "exponential";
+    return true;
+  }
+  // 底がそろわない: 片方が数なら両辺の対数をとる（2^x = 3 → x = log_2(3)）
+  const bool va = has_v(ea, var);
+  const E other = va ? rhs : lhs;
+  const E side = va ? ea : eb;
+  const Rat abase = va ? ba : bb;
+  if (has_v(other, var) || !is_num(other) || other->num.n <= 0) return false;
+  Rat p;
+  E rest;
+  if (!lin_gen(side, var, p, rest) || p.is_zero()) return false;
+  const E lg = fn_e("log", {num(abase), other});
+  push(r.steps, "両辺の対数をとる",
+       "底 " + abase.str() + " の対数をとると 指数 = log_" + abase.str() + "(" +
+           to_infix(other) + ")",
+       eq(lhs, rhs), eq(side, lg));
+  const E root = simp(mul_n({add_n({lg, neg(rest)}), pow_e(num(p), num(Rat(-1)))}));
+  r.roots.push_back(root);
+  r.ok = true;
+  r.kind = "exponential";
+  return true;
+}
+
+inline bool solve_log_eq(const ex::E& lhs, const ex::E& rhs, const std::string& var, int depth,
+                         Solution& r) {
+  using namespace ex;
+  LogSide L, R;
+  if (!merge_log_side(lhs, var, L) || !merge_log_side(rhs, var, R)) return false;
+  if (!L.has_log && !R.has_log) return false;
+  if (L.has_log && R.has_log && (L.is_ln != R.is_ln || (!L.is_ln && !(L.base == R.base))))
+    return false;
+  const bool is_ln = L.has_log ? L.is_ln : R.is_ln;
+  const Rat base = L.has_log ? L.base : R.base;
+  if (!is_ln && (base.n <= 0 || base.is_one())) return false;
+
+  // log_a(argL) - log_a(argR) = konstR - konstL  →  argL = argR · a^(その差)
+  const E cdiff = simp(add_n({R.konst, neg(L.konst)}));
+  if (has_v(cdiff, var)) return false;
+  const E apow = is_ln ? fn_e("exp", {cdiff}) : pow_e(num(base), cdiff);
+  const E merged = eq(fn_e(is_ln ? "ln" : "log",
+                           is_ln ? std::vector<E>{mul_n({L.arg, pow_e(R.arg, num(Rat(-1)))})}
+                                 : std::vector<E>{num(base),
+                                                  mul_n({L.arg, pow_e(R.arg, num(Rat(-1)))})}),
+                      cdiff);
+  push(r.steps, "対数をまとめる", "log a + log b = log ab、k log a = log a^k", eq(lhs, rhs),
+       merged);
+  const E neq = eq(L.arg, mul_n({R.arg, apow}));
+  push(r.steps, "対数の定義", "log_a(M) = c は M = a^c と同じ", merged, neq);
+  // **中身が var の一次なら、そのまま解ける**。ln(x) = 1 の答えは exp(1) で、これは
+  // 有理数の係数に落ちない（poly_coeffs は通らない）ので、こちらの道が要る
+  std::vector<E> cand;
+  const E rhsx = simp(mul_n({R.arg, apow}));
+  Rat lp;
+  E lrest;
+  if (!has_v(rhsx, var) && lin_gen(L.arg, var, lp, lrest) && !lp.is_zero()) {
+    cand.push_back(simp(mul_n({add_n({rhsx, neg(lrest)}), pow_e(num(lp), num(Rat(-1)))})));
+  } else {
+    const Solution s2 = solve_eq(neq, var, depth + 1);
+    if (!s2.ok) return false;
+    for (const Step& st : s2.steps) r.steps.push_back(st);
+    cand = s2.roots;
+  }
+
+  // **真数条件**（log の中身は正でなければならない）。ここを落とすと嘘の解が混ざる
+  std::vector<E> all = L.args;
+  for (const E& a : R.args) all.push_back(a);
+  std::vector<E> keep;
+  for (const E& rt : cand) {
+    bool ok = true;
+    for (const E& a : all) {
+      const E v = simp(subst(a, var, rt));
+      if (has_v(v, var) || approx(v) <= 1e-12) { ok = false; break; }
+    }
+    if (ok) keep.push_back(rt);
+    else
+      push(r.steps, "真数条件", var + " = " + to_infix(rt) + " は log の中身が正にならないので捨てる",
+           rt, rt);
+  }
+  r.roots = keep;
+  r.ok = true;
+  r.kind = keep.empty() ? "empty" : "logarithmic";
+  return true;
+}
+
+inline bool solve_trig_eq(const ex::E& lhs, const ex::E& rhs, const std::string& var,
+                          Solution& r) {
+  using namespace ex;
+  // 片側が sin/cos/tan、もう片側に var が無い
+  E f = lhs, v = rhs;
+  if (!(f->k == Kind::Fn && f->kids.size() == 1)) { f = rhs; v = lhs; }
+  if (!(f->k == Kind::Fn && f->kids.size() == 1)) return false;
+  const std::string& fn = f->name;
+  if (fn != "sin" && fn != "cos" && fn != "tan") return false;
+  if (has_v(v, var)) return false;
+  Rat p, q;
+  {                                                  // 中身は p·var + q·π の形だけ
+    E rest;
+    if (!lin_gen(f->kids[0], var, p, rest) || p.is_zero()) return false;
+    if (!pi_coeff(rest, q)) return false;
+  }
+  const E vs = simp(v);
+  // sin と cos は -1..1 を超えたら解なし（表を探す前に言う）
+  if ((fn == "sin" || fn == "cos") && is_num(vs) && (approx(vs) > 1.0 || approx(vs) < -1.0)) {
+    push(r.steps, "値の範囲", fn + " は -1 以上 1 以下なので、この値にはならない", eq(lhs, rhs),
+         eq(lhs, rhs));
+    r.ok = true;
+    r.kind = "empty";
+    return true;
+  }
+  std::vector<Rat> base;                             // 合う角（π の何倍か）
+  for (long long t = 0; t < 24; ++t) {
+    const long long m = t % 12;
+    if (m == 1 || m == 5 || m == 7 || m == 11) continue;
+    E val;
+    if (!trig_exact(fn, Rat(t, 12), val)) continue;
+    if (equal(simp(val), vs)) base.push_back(Rat(t, 12));
+  }
+  if (base.empty()) return false;                    // 教科書の値の表に無い（逆三角関数が要る）
+  std::vector<Rat> xs;
+  for (const Rat& b : base)
+    for (long long n = -64; n <= 64; ++n) {
+      const Rat xr = (b + Rat(2 * n) - q) / p;       // x = xr·π
+      if (xr.n < 0 || !(xr < Rat(2))) continue;      // 0 <= x < 2π（教科書の既定の範囲）
+      bool dup = false;
+      for (const Rat& o : xs)
+        if (o == xr) { dup = true; break; }
+      if (!dup) xs.push_back(xr);
+    }
+  std::sort(xs.begin(), xs.end(), [](const Rat& a, const Rat& b) { return a < b; });
+  push(r.steps, "三角方程式",
+       "0 <= " + var + " < 2pi の範囲で、" + fn + " がこの値になる角を全部挙げる", eq(lhs, rhs),
+       eq(lhs, rhs));
+  for (const Rat& xr : xs)
+    r.roots.push_back(xr.is_zero() ? num(Rat(0)) : simp(mul_n({num(xr), fn_e("pi", {})})));
+  r.ok = true;
+  r.kind = r.roots.empty() ? "empty" : "trig";
+  return true;
+}
+
+inline bool solve_special(const ex::E& lhs, const ex::E& rhs, const std::string& var, int depth,
+                          Solution& r) {
+  if (solve_trig_eq(lhs, rhs, var, r)) return true;
+  r.steps.clear();
+  if (solve_log_eq(lhs, rhs, var, depth, r)) return true;
+  r.steps.clear();
+  if (solve_exp(lhs, rhs, var, depth, r)) return true;
+  r.steps.clear();
+  return false;
+}
+
 inline Solution solve(const ex::E& in, const std::string& want_var = "") {
   using namespace ex;
   Solution r;
@@ -977,6 +1278,10 @@ inline std::vector<std::string> answer_lines(const Solution& s, bool latex = fal
   if (s.kind == "system") {
     for (size_t i = 0; i < s.vars.size(); ++i)
       out.push_back(s.vars[i] + " = " + show_e(s.vals[i], latex));
+    return out;
+  }
+  if (s.kind == "trig" && s.roots.empty()) {
+    out.push_back("0 <= " + s.var + " < 2pi に解はありません");
     return out;
   }
   if (s.roots.empty()) { out.push_back("実数解なし"); return out; }

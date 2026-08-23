@@ -206,7 +206,43 @@ def move_note(L, R, var):
 # ---------------------------------------------------------------- 方程式
 
 
-def solve_eq(e_in, want_var=""):
+def has_v(e, var):
+    """var を含むか。"""
+    if e.k == X.SYM:
+        return e.name == var
+    return any(has_v(k, var) for k in e.kids)
+
+
+def lin_gen(e, var):
+    """e = p·var + rest（rest は var を含まない式）。(p, rest) か None。"""
+    p = X.Rat(0)
+    ks = []
+    ts = list(e.kids) if e.k == X.ADD else [e]
+    for t in ts:
+        if not has_v(t, var):
+            ks.append(t)
+            continue
+        if t.k == X.SYM:
+            p = p + X.Rat(1)
+            continue
+        if t.k == X.MUL:
+            c, nv = X.Rat(1), 0
+            for f in t.kids:
+                if X.is_num(f):
+                    c = c * f.num
+                elif f.k == X.SYM and f.name == var:
+                    nv += 1
+                else:
+                    return None
+            if nv != 1:
+                return None
+            p = p + c
+            continue
+        return None
+    return (p, X.num(0) if not ks else X.add_n(ks))
+
+
+def solve_eq(e_in, want_var="", depth=0):
     s = Solution()
     syms = X.collect_syms(e_in)
     if not syms:
@@ -225,6 +261,11 @@ def solve_eq(e_in, want_var=""):
 
     c = []
     if not poly_coeffs(diff, s.var, c):
+        # 多項式ではない: 指数・対数・三角の形なら、そちらの解き方に回す
+        if depth < 4 and solve_special(lhs, rhs, s.var, depth, s):
+            return s
+        if s.why:
+            return s                                 # 解き方は分かったが解が無い等
         s.why = "一次・二次の多項式に落とせません"
         return s
     while len(c) > 1 and c[-1].is_zero():
@@ -847,6 +888,257 @@ def solve_system(rels, want_var=""):
 # ---------------------------------------------------------------- 入口
 
 
+# ---------------------------------------------------------------- 指数・対数・三角の方程式
+
+
+def as_power(e):
+    """「数の累乗」の形か（数そのものは指数 1 とみなす）。(底, 指数) か None。"""
+    if X.is_num(e):
+        return None if e.num.n <= 0 else (e.num, X.num(1))
+    if e.k == X.POW and X.is_num(e.kids[0]) and e.kids[0].num.n > 0:
+        return (e.kids[0].num, e.kids[1])
+    return None
+
+
+class LogSide:
+    """片側を「Σ ci·log(a, fi) + 定数」にまとめたもの。"""
+
+    def __init__(self):
+        self.has_log = False
+        self.is_ln = False
+        self.base = X.Rat(0)
+        self.arg = X.num(1)
+        self.konst = X.num(0)
+        self.args = []
+
+
+def merge_log_side(side, var):
+    """log a + log b = log ab、k log a = log a^k をまとめる（底がそろっているときだけ）。"""
+    out = LogSide()
+    ks = []
+    ts = list(side.kids) if side.k == X.ADD else [side]
+    for t in ts:
+        if not has_v(t, var):
+            ks.append(t)
+            continue
+        c, core = X.Rat(1), t
+        if t.k == X.MUL:                             # 係数つき（2 log(x) など）
+            rest = []
+            for f in t.kids:
+                if X.is_num(f):
+                    c = c * f.num
+                else:
+                    rest.append(f)
+            if len(rest) != 1:
+                return None
+            core = rest[0]
+        if not c.is_int() or core.k != X.FN:
+            return None
+        if core.name == "ln" and len(core.kids) == 1:
+            ln_here, a = True, core.kids[0]
+        elif core.name == "log" and len(core.kids) == 2:
+            if not X.is_num(core.kids[0]) or core.kids[0].num.n <= 0:
+                return None
+            if out.has_log and (out.is_ln or not (out.base == core.kids[0].num)):
+                return None
+            ln_here, a = False, core.kids[1]
+            out.base = core.kids[0].num
+        else:
+            return None
+        if out.has_log and out.is_ln != ln_here:
+            return None
+        out.is_ln = ln_here
+        out.has_log = True
+        out.args.append(a)
+        out.arg = X.mul_n([out.arg, X.pow_e(a, X.num(c))])
+    out.konst = X.num(0) if not ks else X.add_n(ks)
+    return out
+
+
+def solve_exp(lhs, rhs, var, depth, r):
+    # **正の数の累乗は必ず正**（2^x = 0 や 2^x = -1 は解なし）。表を引く前に言う
+    for a, b in ((lhs, rhs), (rhs, lhs)):
+        if a.k != X.POW or not X.is_num(a.kids[0]) or a.kids[0].num.n <= 0:
+            continue
+        if not has_v(a.kids[1], var) or not X.is_num(b) or b.num.n > 0:
+            continue
+        r.steps.append(Step("値の範囲", "正の数の累乗は必ず正なので、この値にはならない",
+                            X.eq(lhs, rhs), X.eq(lhs, rhs)))
+        r.ok = True
+        r.kind = "empty"
+        return True
+    pa, pb = as_power(lhs), as_power(rhs)
+    if pa is None or pb is None:
+        return False
+    ba, ea = pa
+    bb, eb = pb
+    if not has_v(ea, var) and not has_v(eb, var):
+        return False
+    ra, ia = X.prim_pow(ba)
+    rb, ib = X.prim_pow(bb)
+    # **底をそろえられるなら指数どうしを比べる**（2^(x+1) = 4^x は 2 に寄せて x+1 = 2x）
+    if ra == rb and not ra.is_one():
+        neq = X.eq(X.mul_n([X.num(ia), ea]), X.mul_n([X.num(ib), eb]))
+        r.steps.append(Step("底をそろえる", "両辺を %s の累乗で表す" % ra, X.eq(lhs, rhs), neq))
+        r.steps.append(Step("指数を比べる", "底が同じなら指数どうしが等しい", neq, neq))
+        s2 = solve_eq(neq, var, depth + 1)
+        if not s2.ok:
+            return False
+        r.steps.extend(s2.steps)
+        r.roots = s2.roots
+        r.ok = True
+        r.kind = s2.kind if s2.kind in ("identity", "contradiction") else "exponential"
+        return True
+    # 底がそろわない: 片方が数なら両辺の対数をとる（2^x = 3 → x = log_2(3)）
+    va = has_v(ea, var)
+    other = rhs if va else lhs
+    side = ea if va else eb
+    abase = ba if va else bb
+    if has_v(other, var) or not X.is_num(other) or other.num.n <= 0:
+        return False
+    pr = lin_gen(side, var)
+    if pr is None or pr[0].is_zero():
+        return False
+    p, rest = pr
+    lg = X.fn_e("log", [X.num(abase), other])
+    r.steps.append(Step("両辺の対数をとる",
+                        "底 %s の対数をとると 指数 = log_%s(%s)"
+                        % (abase, abase, X.to_infix(other)),
+                        X.eq(lhs, rhs), X.eq(side, lg)))
+    r.roots.append(X.simp(X.mul_n([X.add_n([lg, X.neg(rest)]), X.pow_e(X.num(p), X.num(-1))])))
+    r.ok = True
+    r.kind = "exponential"
+    return True
+
+
+def solve_log_eq(lhs, rhs, var, depth, r):
+    L, R = merge_log_side(lhs, var), merge_log_side(rhs, var)
+    if L is None or R is None:
+        return False
+    if not L.has_log and not R.has_log:
+        return False
+    if L.has_log and R.has_log and (L.is_ln != R.is_ln or (not L.is_ln and not (L.base == R.base))):
+        return False
+    is_ln = L.is_ln if L.has_log else R.is_ln
+    base = L.base if L.has_log else R.base
+    if not is_ln and (base.n <= 0 or base.is_one()):
+        return False
+
+    # log_a(argL) - log_a(argR) = konstR - konstL  →  argL = argR · a^(その差)
+    cdiff = X.simp(X.add_n([R.konst, X.neg(L.konst)]))
+    if has_v(cdiff, var):
+        return False
+    apow = X.fn_e("exp", [cdiff]) if is_ln else X.pow_e(X.num(base), cdiff)
+    inner = X.mul_n([L.arg, X.pow_e(R.arg, X.num(-1))])
+    merged = X.eq(X.fn_e("ln", [inner]) if is_ln else X.fn_e("log", [X.num(base), inner]), cdiff)
+    r.steps.append(Step("対数をまとめる", "log a + log b = log ab、k log a = log a^k",
+                        X.eq(lhs, rhs), merged))
+    neq = X.eq(L.arg, X.mul_n([R.arg, apow]))
+    r.steps.append(Step("対数の定義", "log_a(M) = c は M = a^c と同じ", merged, neq))
+    # **中身が var の一次なら、そのまま解ける**。ln(x) = 1 の答えは exp(1) で、これは
+    # 有理数の係数に落ちない（poly_coeffs は通らない）ので、こちらの道が要る
+    rhsx = X.simp(X.mul_n([R.arg, apow]))
+    lg = lin_gen(L.arg, var)
+    if not has_v(rhsx, var) and lg is not None and not lg[0].is_zero():
+        cand = [X.simp(X.mul_n([X.add_n([rhsx, X.neg(lg[1])]), X.pow_e(X.num(lg[0]), X.num(-1))]))]
+    else:
+        s2 = solve_eq(neq, var, depth + 1)
+        if not s2.ok:
+            return False
+        r.steps.extend(s2.steps)
+        cand = s2.roots
+
+    # **真数条件**（log の中身は正でなければならない）。ここを落とすと嘘の解が混ざる
+    all_args = L.args + R.args
+    keep = []
+    for rt in cand:
+        ok = True
+        for a in all_args:
+            v = X.simp(X.subst(a, var, rt))
+            if has_v(v, var) or X.approx(v) <= 1e-12:
+                ok = False
+                break
+        if ok:
+            keep.append(rt)
+        else:
+            r.steps.append(Step("真数条件",
+                                "%s = %s は log の中身が正にならないので捨てる"
+                                % (var, X.to_infix(rt)), rt, rt))
+    r.roots = keep
+    r.ok = True
+    r.kind = "empty" if not keep else "logarithmic"
+    return True
+
+
+def solve_trig_eq(lhs, rhs, var, r):
+    # 片側が sin/cos/tan、もう片側に var が無い
+    f, v = lhs, rhs
+    if not (f.k == X.FN and len(f.kids) == 1):
+        f, v = rhs, lhs
+    if not (f.k == X.FN and len(f.kids) == 1):
+        return False
+    fn = f.name
+    if fn not in ("sin", "cos", "tan") or has_v(v, var):
+        return False
+    lg = lin_gen(f.kids[0], var)                     # 中身は p·var + q·π の形だけ
+    if lg is None or lg[0].is_zero():
+        return False
+    p = lg[0]
+    q = X.pi_coeff(lg[1])
+    if q is None:
+        return False
+    vs = X.simp(v)
+    # sin と cos は -1..1 を超えたら解なし（表を探す前に言う）
+    if fn in ("sin", "cos") and X.is_num(vs) and (X.approx(vs) > 1.0 or X.approx(vs) < -1.0):
+        r.steps.append(Step("値の範囲", "%s は -1 以上 1 以下なので、この値にはならない" % fn,
+                            X.eq(lhs, rhs), X.eq(lhs, rhs)))
+        r.ok = True
+        r.kind = "empty"
+        return True
+    base = []                                        # 合う角（π の何倍か）
+    for t in range(24):
+        if t % 12 in (1, 5, 7, 11):
+            continue
+        val = X.trig_exact(fn, X.Rat(t, 12))
+        if val is None:
+            continue
+        if X.equal(X.simp(val), vs):
+            base.append(X.Rat(t, 12))
+    if not base:
+        return False                                 # 教科書の値の表に無い（逆三角関数が要る）
+    xs = []
+    for b in base:
+        for n in range(-64, 65):
+            xr = (b + X.Rat(2 * n) - q) / p          # x = xr·π
+            if xr.n < 0 or not (xr < X.Rat(2)):      # 0 <= x < 2π（教科書の既定の範囲）
+                continue
+            if not any(o == xr for o in xs):
+                xs.append(xr)
+    xs.sort(key=lambda z: z.f())
+    r.steps.append(Step("三角方程式",
+                        "0 <= %s < 2pi の範囲で、%s がこの値になる角を全部挙げる" % (var, fn),
+                        X.eq(lhs, rhs), X.eq(lhs, rhs)))
+    for xr in xs:
+        r.roots.append(X.num(0) if xr.is_zero()
+                       else X.simp(X.mul_n([X.num(xr), X.fn_e("pi", [])])))
+    r.ok = True
+    r.kind = "empty" if not r.roots else "trig"
+    return True
+
+
+def solve_special(lhs, rhs, var, depth, r):
+    if solve_trig_eq(lhs, rhs, var, r):
+        return True
+    r.steps = []
+    if solve_log_eq(lhs, rhs, var, depth, r):
+        return True
+    r.steps = []
+    if solve_exp(lhs, rhs, var, depth, r):
+        return True
+    r.steps = []
+    return False
+
+
 def solve(e_in, want_var=""):
     r = Solution()
     if e_in.k == X.SYS:
@@ -931,6 +1223,8 @@ def answer_lines(s, latex=False):
         return [range_text(s, latex)]
     if s.kind == "system":
         return ["%s = %s" % (v, show_e(s.vals[i], latex)) for i, v in enumerate(s.vars)]
+    if s.kind == "trig" and not s.roots:
+        return ["0 <= %s < 2pi に解はありません" % s.var]
     if not s.roots:
         return ["実数解なし"]
     return ["%s = %s" % (s.var, show_e(rt, latex)) for rt in s.roots]
@@ -950,7 +1244,9 @@ def main():
     s = solve(e, a.var)
     show = X.to_latex if a.latex else X.to_infix
     if not s.ok:
-        print("solve: %s" % s.why)
+        # **答えの文言は answer_lines だけ**（C++ 側もそこを通る）
+        for line in answer_lines(s, a.latex):
+            print(line)
         return 1
     if a.steps:
         for i, st in enumerate(s.steps, 1):

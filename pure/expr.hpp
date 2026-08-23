@@ -318,6 +318,19 @@ inline E pow_e(const E& b_in, const E& e_in) {
       }
     }
   }
+  // **a^(log_a M) = M**（指数と対数は逆の操作）。log(2, x) = log(2, 5) を解くと
+  // x = 2^(log_2 5) が出るので、ここで畳まないと答えが 5 にならない。
+  if (is_num(b) && b->num.n > 0) {
+    Rat k(1);
+    E core = p;
+    if (p->k == Kind::Mul && p->kids.size() == 2 && is_num(p->kids[0])) {
+      k = p->kids[0]->num;
+      core = p->kids[1];
+    }
+    if (core->k == Kind::Fn && core->name == "log" && core->kids.size() == 2 &&
+        is_num(core->kids[0]) && core->kids[0]->num == b->num)
+      return pow_e(core->kids[1], num(k));
+  }
   if (b->k == Kind::Pow) {                                      // (a^m)^n = a^(mn)
     const E& in = b->kids[1];
     // **内側が整数でないなら畳んでよい。** 内側が根（1/2 など）なら、底は実数の範囲で
@@ -456,6 +469,23 @@ inline E fn_e(const std::string& name, std::vector<E> args) {
     E v;
     if (pi_coeff(args[0], c) && trig_exact(name, c, v)) return v;
   }
+  // exp と ln も逆の操作（exp(ln M) = M、ln(exp M) = M、log(a, a^M) = M）
+  if (name == "exp" && args.size() == 1) {
+    Rat k(1);
+    E core = args[0];
+    if (core->k == Kind::Mul && core->kids.size() == 2 && is_num(core->kids[0])) {
+      k = core->kids[0]->num;
+      core = core->kids[1];
+    }
+    if (core->k == Kind::Fn && core->name == "ln" && core->kids.size() == 1)
+      return pow_e(core->kids[0], num(k));
+  }
+  if (name == "ln" && args.size() == 1 && args[0]->k == Kind::Fn && args[0]->name == "exp" &&
+      args[0]->kids.size() == 1)
+    return args[0]->kids[0];
+  if (name == "log" && args.size() == 2 && is_num(args[0]) && args[1]->k == Kind::Pow &&
+      is_num(args[1]->kids[0]) && args[1]->kids[0]->num == args[0]->num)
+    return args[1]->kids[1];
   if (args.size() == 1 && is_num(args[0])) {
     const Rat& r = args[0]->num;
     if (name == "abs") return num(r.neg() ? -r : r);
