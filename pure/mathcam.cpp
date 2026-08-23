@@ -26,6 +26,7 @@
 #include "area.hpp"
 #include "trig.hpp"
 #include "recur.hpp"
+#include "circle.hpp"
 #include "typeset_impl.hpp"
 #include "gen_expr.hpp"
 #include "parse_layout.hpp"
@@ -553,6 +554,27 @@ static int cmd_apart(int argc, char** argv) {
   const ex::E out = cal::apart_expr(a, v);
   printf("%s\n", (latex ? ex::to_latex(out) : ex::to_infix(out)).c_str());
   return 0;
+}
+
+// mathcam circle — 円の方程式（中心と半径）
+static int cmd_circle(int argc, char** argv) {
+  const std::string src = arg_of(argc, argv, "--expr", "");
+  const bool steps = has_flag(argc, argv, "--steps");
+  const bool latex = has_flag(argc, argv, "--latex");
+  if (src.empty()) {
+    printf("usage: mathcam circle --expr \"x^2 + y^2 - 4x + 2y - 4 = 0\" [--steps] [--latex]\n");
+    return 1;
+  }
+  std::string why;
+  const ex::E e = ex::parse(src, &why);
+  if (!why.empty()) { printf("parse error: %s\n", why.c_str()); return 1; }
+  const cir::Result r = cir::circle(e, "", "");
+  if (steps)
+    for (size_t i = 0; i < r.steps.size(); ++i)
+      printf("%zu. [%s] %s\n   %s\n", i + 1, r.steps[i].rule.c_str(), r.steps[i].note.c_str(),
+             (latex ? ex::to_latex(r.steps[i].after) : ex::to_infix(r.steps[i].after)).c_str());
+  for (const std::string& line : cir::answer_lines(r, latex)) printf("%s\n", line.c_str());
+  return r.ok ? 0 : 1;
 }
 
 // mathcam render — 式を組版して画像にする。--labels で記号ごとの正解枠も書く。
@@ -1263,7 +1285,7 @@ int main(int argc, char** argv) {
   }
 #endif
   if (argc < 2) {
-    printf("usage: mathcam <eval|solve|diff|integ|sum|seq|factor|curve|limit|area|trig|recur|apart|render|dataset|parse|selftest|photo> ...\n");
+    printf("usage: mathcam <eval|solve|diff|integ|sum|seq|factor|curve|limit|area|trig|recur|apart|circle|render|dataset|parse|selftest|photo> ...\n");
     return 1;
   }
   const std::string cmd = argv[1];
@@ -1281,6 +1303,7 @@ int main(int argc, char** argv) {
   if (cmd == "trig") return cmd_trig(argc, argv);
   if (cmd == "recur") return cmd_recur(argc, argv);
   if (cmd == "apart") return cmd_apart(argc, argv);
+  if (cmd == "circle") return cmd_circle(argc, argv);
   if (cmd == "render") return cmd_render(argc, argv);
   if (cmd == "dataset") return cmd_dataset(argc, argv);
   if (cmd == "genexpr") return cmd_genexpr(argc, argv);
