@@ -33,6 +33,8 @@
 #include "parse_layout.hpp"
 #include "classes.hpp"
 #include "pipeline.hpp"
+#include "train_det.hpp"
+#include "build_v8.hpp"
 #include <cstdio>
 #include <clocale>
 #include <cstring>
@@ -619,6 +621,288 @@ static int cmd_vec(int argc, char** argv) {
              (latex ? ex::to_latex(r.steps[i].after) : ex::to_infix(r.steps[i].after)).c_str());
   for (const std::string& line : vec::answer_lines(r, latex)) printf("%s\n", line.c_str());
   return r.ok ? 0 : 1;
+}
+
+// ---------------------------------------------------------------- 検出器を C++ で学習する
+//
+// **これが両言語対等性の最後の穴だった**。今までは検出器だけ Python（Ultralytics）でしか
+// 学習できず、「C++ と Python で同じことができる」が検出器に限って嘘になっていた。
+//
+// 中身は姉妹リポ（yolo_lpr_cpp）から持ってきた pure/train_det.hpp。要点は
+// **ONNX をその場で学習する**こと: Ultralytics の書き出したグラフには、頭の 6 本の Conv
+// （box は [B,4*reg_max,H,W]、cls は [B,nc,H,W]）が普通のノードとして残っている。その手前で
+// 止めて損失をつなげば、backward が全部の重みに届く。もう 1 つのアーキテクチャ定義は要らない。
+
+// mathcam train-det --gradcheck — 損失の勾配を数値微分と突き合わせる
+static int cmd_train_det_gradcheck(int argc, char** argv) {
+  const uint64_t seed = strtoull(arg_of(argc, argv, "--seed", "7").c_str(), nullptr, 10);
+  const int imgsz = 64, B = 2, nc = 3, reg = 16;
+  const int64_t hw[3] = {8, 4, 2};
+  Rng rng(seed);
+  auto randn = [&]() {                                   // Box-Muller（この repo の splitmix64 から）
+    const double u1 = std::max(1e-12, rng.unit()), u2 = rng.unit();
+    return (float)(std::sqrt(-2 * std::log(u1)) * std::cos(6.283185307179586 * u2));
+  };
+  std::vector<Tensor> bx, cs;
+  std::vector<float> strides;
+  for (int l = 0; l < 3; ++l) {
+    Tensor b = make_tensor({B, 4 * reg, hw[l], hw[l]}, true);
+    Tensor c = make_tensor({B, nc, hw[l], hw[l]}, true);
+    for (float& v : b->data) v = randn();
+    for (float& v : c->data) v = randn() - 2.f;          // スコアは低いところから始まる（実物と同じ）
+    bx.push_back(b);
+    cs.push_back(c);
+    strides.push_back((float)imgsz / (float)hw[l]);
+  }
+  std::vector<std::vector<std::array<float, 5>>> gts(B);
+  gts[0].push_back({0, 6, 10, 40, 30});
+  gts[0].push_back({2, 30, 34, 60, 52});
+  gts[1].push_back({1, 2, 2, 20, 14});
+  det::LossCfg cfg;
+  det::LossOut rep;
+  Tensor loss = det::v8_loss(bx, cs, strides, gts, cfg, &rep);
+  backward(loss);
+  printf("gradcheck: loss %.6f (box %.4f cls %.4f dfl %.4f, fg %d)\n", rep.total, rep.box, rep.cls,
+         rep.dfl, rep.fg);
+  auto num_grad = [&](Tensor t, int64_t i, float h) {
+    const float keep = t->data[i];
+    det::LossOut r1, r2;
+    t->data[i] = keep + h;
+    Tensor l1 = det::v8_loss(bx, cs, strides, gts, cfg, &r1);
+    t->data[i] = keep - h;
+    Tensor l2 = det::v8_loss(bx, cs, strides, gts, cfg, &r2);
+    t->data[i] = keep;
+    const float d = (l1->data[0] - l2->data[0]) / (2 * h);
+    free_graph(l1);
+    free_graph(l2);
+    return d;
+  };
+  double worst = 0, worst_a = 0, worst_n = 0;
+  int checked = 0, skipped = 0;
+  for (int k = 0; k < 3; ++k)
+    for (int which = 0; which < 2; ++which) {
+      Tensor t = which ? cs[k] : bx[k];
+      for (int sm = 0; sm < 25; ++sm) {
+        const int64_t i = (int64_t)rng.below((uint64_t)t->numel());
+        const float a = t->grad[i];
+        float n = num_grad(t, i, 1e-2f);
+        // **割り当てが切り替わる点での差分商は意味がない**（損失は区分的に滑らかなだけ）。
+        // 食い違ったら 1/10 の幅で取り直し、それでも合わなければ「段差をまたいだ」と見なす。
+        double rel = std::fabs(a - n) / std::max(1e-4f, std::max(std::fabs(a), std::fabs(n)));
+        if (rel > 1e-2) {
+          const float n2 = num_grad(t, i, 1e-3f);
+          const double rel2 = std::fabs(a - n2) / std::max(1e-4f, std::max(std::fabs(a), std::fabs(n2)));
+          if (rel2 < rel) { rel = rel2; n = n2; }
+          if (rel > 1e-2) { ++skipped; continue; }
+        }
+        ++checked;
+        if (rel > worst) { worst = rel; worst_a = a; worst_n = n; }
+      }
+    }
+  free_graph(loss);
+  printf("gradcheck: %d 点、最悪の相対誤差 %.3e（解析 %.6f / 数値 %.6f）\n", checked, worst,
+         worst_a, worst_n);
+  if (skipped) printf("gradcheck: %d 点は割り当ての段差の上にいたので比べていない\n", skipped);
+  printf("gradcheck: %s\n", worst < 1e-2 ? "PASS" : "FAIL");
+  return worst < 1e-2 ? 0 : 1;
+}
+
+// mathcam build-det — まっさらな yolov8n の ONNX を書く（PyTorch を通さずに作る）
+static int cmd_build_det(int argc, char** argv) {
+  const std::string out = arg_of(argc, argv, "--out", "");
+  v8b::Cfg cfg;
+  cfg.nc = std::atoi(arg_of(argc, argv, "--nc", "39").c_str());
+  cfg.imgsz = std::atoi(arg_of(argc, argv, "--imgsz", "640").c_str());
+  cfg.width = atof(arg_of(argc, argv, "--width", "0.25").c_str());
+  cfg.depth = atof(arg_of(argc, argv, "--depth", "0.33").c_str());
+  const uint64_t seed = strtoull(arg_of(argc, argv, "--seed", "1234").c_str(), nullptr, 10);
+  if (out.empty()) {
+    printf("usage: mathcam build-det --out models/fresh.onnx [--nc 39] [--imgsz 640]\n"
+           "                        [--width 0.25] [--depth 0.33] [--seed 1234] [--fuse-bn]\n");
+    return 1;
+  }
+  onx::Graph g = v8b::build(cfg, seed);
+  size_t np = 0;
+  for (const onx::Tensor64& i : g.init_f) np += i.data.size();
+  if (has_flag(argc, argv, "--fuse-bn")) {
+    int fused = 0;
+    g = v8b::fuse_bn(g, &fused);
+    printf("BatchNormalization を %d 個たたみ込んだ（推論の形）\n", fused);
+  }
+  onx::save_onnx(g, out);
+  printf("wrote %s: %zu ノード、%zu パラメータ（nc %d, imgsz %d）\n", out.c_str(), g.nodes.size(),
+         np, cfg.nc, cfg.imgsz);
+  return 0;
+}
+
+// mathcam train-det — 検出器を C++ で学習する（ONNX をその場で更新する）
+static int cmd_train_det(int argc, char** argv) {
+  if (has_flag(argc, argv, "--gradcheck")) return cmd_train_det_gradcheck(argc, argv);
+  const std::string onnx_in = arg_of(argc, argv, "--init", "models/sym_det_v5.onnx");
+  const std::string data = arg_of(argc, argv, "--data", "");
+  const std::string out = arg_of(argc, argv, "--export", "");
+  const std::string fixture = arg_of(argc, argv, "--dump-fixture", "");
+  const std::string optim = arg_of(argc, argv, "--optim", "sgd");
+  int imgsz = std::atoi(arg_of(argc, argv, "--imgsz", "0").c_str());
+  int steps = std::atoi(arg_of(argc, argv, "--steps", "20").c_str());
+  const int epochs = std::atoi(arg_of(argc, argv, "--epochs", "0").c_str());
+  const int batch = std::atoi(arg_of(argc, argv, "--batch", "2").c_str());
+  const int limit = std::atoi(arg_of(argc, argv, "--limit", "0").c_str());
+  const float lr0 = (float)atof(arg_of(argc, argv, "--lr", optim == "sgd" ? "0.002" : "1e-4").c_str());
+  const float lrf = (float)atof(arg_of(argc, argv, "--lrf", "0.01").c_str());
+  const float momentum = (float)atof(arg_of(argc, argv, "--momentum", "0.937").c_str());
+  const float warm_mom = (float)atof(arg_of(argc, argv, "--warmup-momentum", "0.8").c_str());
+  const float wd = (float)atof(arg_of(argc, argv, "--weight-decay", "0.0005").c_str());
+  const float ema_decay = (float)atof(arg_of(argc, argv, "--ema-decay", "0.9999").c_str());
+  const float close_mosaic = (float)atof(arg_of(argc, argv, "--close-mosaic", "0.1").c_str());
+  const uint64_t seed = strtoull(arg_of(argc, argv, "--seed", "1234").c_str(), nullptr, 10);
+  const float clip = (float)atof(arg_of(argc, argv, "--clip", "10.0").c_str());   // ultralytics と同じ
+  const bool cos_lr = has_flag(argc, argv, "--cos-lr");
+  const bool no_aug = has_flag(argc, argv, "--no-aug");
+  const bool no_ema = has_flag(argc, argv, "--no-ema");
+  const bool dump_loss = has_flag(argc, argv, "--dump-loss");
+  if (data.empty()) {
+    printf("usage: mathcam train-det --data <dir with images/ labels/> [--init models/sym_det_v5.onnx]\n"
+           "                        [--export out.onnx] [--steps 20] [--batch 2] [--imgsz 640]\n"
+           "                        [--optim sgd|adam] [--lr 0.002] [--no-aug] [--cos-lr]\n"
+           "       mathcam train-det --gradcheck        （損失の勾配を数値微分と突き合わせる）\n");
+    return 1;
+  }
+  det::AugCfg aug;
+  aug.mosaic = (float)atof(arg_of(argc, argv, "--mosaic", "1.0").c_str());
+  aug.fliplr = (float)atof(arg_of(argc, argv, "--fliplr", "0.0").c_str());   // 数式は左右反転しない
+  aug.degrees = (float)atof(arg_of(argc, argv, "--degrees", "3.0").c_str());
+  aug.translate = (float)atof(arg_of(argc, argv, "--translate", "0.1").c_str());
+  aug.scale = (float)atof(arg_of(argc, argv, "--scale", "0.4").c_str());
+  aug.hsv_h = (float)atof(arg_of(argc, argv, "--hsv-h", "0.015").c_str());
+  aug.hsv_s = (float)atof(arg_of(argc, argv, "--hsv-s", "0.4").c_str());
+  aug.hsv_v = (float)atof(arg_of(argc, argv, "--hsv-v", "0.4").c_str());
+
+  std::vector<det::Item> items = det::read_yolo(data);
+  if (limit > 0 && (int)items.size() > limit) items.resize((size_t)limit);
+  if (items.empty()) { printf("%s/images に画像がありません\n", data.c_str()); return 1; }
+  size_t nbox = 0;
+  for (const det::Item& it : items) nbox += it.boxes.size();
+  const int per_epoch = std::max(1, (int)((items.size() + batch - 1) / batch));
+  if (epochs > 0) steps = epochs * per_epoch;
+  int warmup = std::atoi(arg_of(argc, argv, "--warmup", "-1").c_str());
+  if (warmup < 0) warmup = std::min(std::max(100, 3 * per_epoch), std::max(1, steps / 5));
+  const int mosaic_off_at = close_mosaic > 1.f ? steps - (int)close_mosaic
+                                               : steps - (int)(close_mosaic * steps);
+
+  onx::Graph g = onx::load_onnx(onnx_in);
+  if (g.nodes.empty()) { printf("%s が読めません\n", onnx_in.c_str()); return 1; }
+  det::HeadNames hn;
+  std::string why;
+  if (!det::find_v8_heads(g, hn, &why)) { printf("%s: %s\n", onnx_in.c_str(), why.c_str()); return 1; }
+  if (imgsz <= 0) {
+    for (const onx::ValueInfo& v : g.inputs)
+      if (v.dims.size() == 4 && v.dims[3] > 0) imgsz = (int)v.dims[3];
+    if (imgsz <= 0) imgsz = 640;
+  }
+  // 損失につながるのは頭の 6 本の Conv だけなので、その手前までを学習する
+  // （DFL の射影とデコード部は書き出されたままで動かさない）
+  std::set<std::string> needed(hn.box.begin(), hn.box.end());
+  needed.insert(hn.cls.begin(), hn.cls.end());
+  onx::Trainable t = onx::make_trainable(g, false, needed);
+  int bn_nodes = 0;
+  for (const onx::Node& n : g.nodes)
+    if (n.op_type == "BatchNormalization") ++bn_nodes;
+  const bool bn_train = bn_nodes > 0 && !has_flag(argc, argv, "--freeze-bn");
+
+  if (!dump_loss) {
+    printf("%s: 学習する tensor %zu 個、パラメータ %zu 個\n", onnx_in.c_str(), t.params.size(),
+           onx::param_count(t));
+    printf("head: box %s ...（%zu 段）\n", hn.box[0].c_str(), hn.box.size());
+    printf("data: 画像 %zu 枚、枠 %zu 個、imgsz %d、batch %d（%d/epoch）、%d step\n", items.size(),
+           nbox, imgsz, batch, per_epoch, steps);
+    printf("optim: %s lr %g -> %g（%s）、warmup %d、clip %g、EMA %s、BN %s\n", optim.c_str(), lr0,
+           lr0 * lrf, cos_lr ? "cosine" : "linear", warmup, clip, no_ema ? "off" : "on",
+           bn_nodes ? (bn_train ? "学習する" : "止める") : "無し（畳み込み済み）");
+  }
+
+  SGD sgd(t.params, lr0, momentum, wd, true);
+  Adam adam(t.params, lr0, 0.9f, 0.999f, 1e-8f, wd, true);
+  const bool use_sgd = optim != "adam";
+  Ema ema(t.params, ema_decay);
+  Rng rng(seed);
+  det::LossCfg cfg;
+  double first = 0, last = 0;
+
+  for (int step = 0; step < steps; ++step) {
+    const float x = (float)step / (float)std::max(1, steps);
+    float lr = cos_lr ? lr0 * (lrf + (1 - lrf) * 0.5f * (1 + std::cos(3.14159265358979f * x)))
+                      : lr0 * ((1 - x) * (1 - lrf) + lrf);
+    float mom = momentum;
+    if (step < warmup) {
+      const float w = (float)(step + 1) / (float)warmup;
+      lr *= w;
+      mom = warm_mom + (momentum - warm_mom) * w;
+    }
+    sgd.lr = lr;
+    sgd.momentum = mom;
+    adam.lr = lr;
+    std::vector<int> idx;
+    if ((int)items.size() <= batch)
+      for (size_t i = 0; i < items.size(); ++i) idx.push_back((int)i);
+    else
+      for (int b = 0; b < batch; ++b) idx.push_back((int)rng.below((uint64_t)items.size()));
+    det::Batch ba = no_aug ? det::make_batch(items, idx, imgsz)
+                           : det::make_batch_aug(items, idx, imgsz, rng, aug, step < mosaic_off_at);
+    det::LossOut rep;
+    std::vector<Tensor> bxs, css;
+    Tensor loss = det::forward_loss(t, hn, ba.x, ba.gts, imgsz, cfg, &rep, &bxs, &css, bn_train);
+    if (use_sgd) sgd.zero_grad(); else adam.zero_grad();
+    backward(loss);
+    const float gnorm = clip_grad_norm(t.params, clip);
+    if (step == 0) first = rep.total;
+    last = rep.total;
+    if (dump_loss) printf("%d %.6f %.6f %.6f %.6f\n", step, rep.total, rep.box, rep.cls, rep.dfl);
+    else printf("step %d: loss %.4f (box %.4f cls %.4f dfl %.4f) fg %d lr %.2e |g| %.1f%s\n", step,
+                rep.total, rep.box, rep.cls, rep.dfl, rep.fg, lr, gnorm,
+                (clip > 0 && gnorm > clip) ? " (clip)" : "");
+    fflush(stdout);
+    if (!fixture.empty() && step == 0) {
+      // step 0 の頭の出力・正解枠・損失・勾配。Python 側（tools/parity/train_det.py）が
+      // **同じ数**を ultralytics の v8DetectionLoss に食わせて突き合わせる
+      FILE* f = fopen(fixture.c_str(), "wb");
+      if (f) {
+        auto wi = [&](int32_t v) { fwrite(&v, 4, 1, f); };
+        fwrite("MCAMDET1", 1, 8, f);
+        wi((int32_t)bxs.size());
+        wi((int32_t)bxs[0]->shape[0]);
+        wi((int32_t)css[0]->shape[1]);
+        wi((int32_t)(bxs[0]->shape[1] / 4));
+        wi((int32_t)imgsz);
+        for (size_t l = 0; l < bxs.size(); ++l) wi((int32_t)bxs[l]->shape[2]);
+        for (const Tensor& b : bxs) fwrite(b->data.data(), 4, (size_t)b->numel(), f);
+        for (const Tensor& c : css) fwrite(c->data.data(), 4, (size_t)c->numel(), f);
+        int32_t ngt = 0;
+        for (const auto& v : ba.gts) ngt += (int32_t)v.size();
+        wi(ngt);
+        for (size_t b = 0; b < ba.gts.size(); ++b)
+          for (const auto& q : ba.gts[b]) { wi((int32_t)b); fwrite(q.data(), 4, 5, f); }
+        const float parts[4] = {rep.total, rep.box, rep.cls, rep.dfl};
+        fwrite(parts, 4, 4, f);
+        for (const Tensor& b : bxs) fwrite(b->grad.data(), 4, (size_t)b->numel(), f);
+        for (const Tensor& c : css) fwrite(c->grad.data(), 4, (size_t)c->numel(), f);
+        fclose(f);
+        printf("wrote %s（step 0 の頭の出力・正解枠・損失・勾配）\n", fixture.c_str());
+      }
+    }
+    if (use_sgd) sgd.step(); else adam.step();
+    if (!no_ema) ema.update();
+    free_graph(loss);
+  }
+  if (!dump_loss) printf("loss %.4f -> %.4f（%d step）\n", first, last, steps);
+  if (!out.empty()) {
+    if (!no_ema) ema.swap();
+    onx::write_back(t);
+    onx::save_onnx(t.g, out);
+    if (!no_ema) ema.swap();
+    printf("wrote %s%s\n", out.c_str(), no_ema ? "" : "（EMA の重み）");
+  }
+  return 0;
 }
 
 // mathcam render — 式を組版して画像にする。--labels で記号ごとの正解枠も書く。
@@ -1329,7 +1613,7 @@ int main(int argc, char** argv) {
   }
 #endif
   if (argc < 2) {
-    printf("usage: mathcam <eval|solve|diff|integ|sum|seq|factor|curve|limit|area|trig|recur|apart|circle|vec|render|dataset|parse|selftest|photo> ...\n");
+    printf("usage: mathcam <eval|solve|diff|integ|sum|seq|factor|curve|limit|area|trig|recur|apart|circle|vec|train-det|build-det|render|dataset|parse|selftest|photo> ...\n");
     return 1;
   }
   const std::string cmd = argv[1];
@@ -1349,6 +1633,8 @@ int main(int argc, char** argv) {
   if (cmd == "apart") return cmd_apart(argc, argv);
   if (cmd == "circle") return cmd_circle(argc, argv);
   if (cmd == "vec") return cmd_vec(argc, argv);
+  if (cmd == "train-det") return cmd_train_det(argc, argv);
+  if (cmd == "build-det") return cmd_build_det(argc, argv);
   if (cmd == "render") return cmd_render(argc, argv);
   if (cmd == "dataset") return cmd_dataset(argc, argv);
   if (cmd == "genexpr") return cmd_genexpr(argc, argv);

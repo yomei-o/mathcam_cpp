@@ -43,6 +43,22 @@ struct SGD {
 // decay ramps in (`d = decay * (1 - exp(-updates/tau))`) so the first steps are not averaged against
 // a random initialisation. Measured everywhere in the YOLO literature: the EMA copy is the one worth
 // exporting, and `swap()` is how it gets written out without disturbing the live weights.
+// torch.nn.utils.clip_grad_norm_ — ultralytics のトレーナも max_norm 10 で毎 step 呼んでいる。
+// **クラス数が増えると要る**: nc=1 の姉妹リポは無しでも回っていたが、nc=39 のこちらは
+// lr 0.002 で 3 step 目に cls が 36311 まで跳ねて NaN になった（実測）。
+inline float clip_grad_norm(std::vector<Tensor>& params, float max_norm) {
+  double sq = 0.0;
+  for (const Tensor& p : params)
+    for (float g : p->grad) sq += (double)g * g;
+  const float total = (float)std::sqrt(sq);
+  if (max_norm > 0 && total > max_norm) {
+    const float s = max_norm / (total + 1e-6f);
+    for (Tensor& p : params)
+      for (float& g : p->grad) g *= s;
+  }
+  return total;
+}
+
 struct Ema {
   std::vector<Tensor> params;
   std::vector<std::vector<float>> shadow;
