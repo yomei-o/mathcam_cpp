@@ -1100,7 +1100,16 @@ class Parser:
                 return fn_e(name, args)
             # **英字が続いたら 1 文字ずつの変数の積**（`12xy` は 12*x*y。教科書はそう書く）
             if len(name) > 1:
-                return mul_n([sym(c) for c in name])
+                fs = [sym(c) for c in name[:-1]]
+                # **指数は最後の 1 文字にだけ付く**。`xy^2` は x·y^2 であって (xy)^2 ではない
+                # （教科書の書き方。ここを間違えると 9xy^2 が 9x^2y^2 になる）
+                last = sym(name[-1])
+                self.ws()
+                if self.peek("^"):
+                    self.eat("^")
+                    last = self.bin("op_pow", last, self.parse_unary())
+                fs.append(last)
+                return mul_n(fs)
             return sym(name)
         self.err = "読めない文字: " + self.s[self.i]
         self.i += 1

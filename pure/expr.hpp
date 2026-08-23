@@ -1099,7 +1099,16 @@ struct Parser {
       // 1 つの変数 "xy" にしていたら、次数が 1 と数えられて表示順も展開も狂った。
       if (name.size() > 1) {
         std::vector<E> fs;
-        for (char c : name) fs.push_back(sym(std::string(1, c)));
+        for (size_t j = 0; j + 1 < name.size(); ++j) fs.push_back(sym(std::string(1, name[j])));
+        // **指数は最後の 1 文字にだけ付く**。`xy^2` は x·y^2 であって (xy)^2 ではない
+        // （教科書の書き方。ここを間違えると 9xy^2 が 9x^2y^2 になる）
+        E last = sym(std::string(1, name.back()));
+        ws();
+        if (peek('^')) {
+          eat('^');
+          last = bin("op_pow", last, parse_unary());
+        }
+        fs.push_back(last);
         return mul_n(fs);
       }
       return sym(name);
