@@ -1098,6 +1098,13 @@ class Parser:
                     self.i += 1
                 return num(Rat(v * den + f, den))
             return num(v)
+        # **|x - 1| の書き方**（教科書はこう書く）。abs(...) と同じ木にする
+        if self.peek("|"):
+            self.eat("|")
+            a = self.parse_add()
+            if not self.eat("|"):
+                self.err = "絶対値の | が閉じていません"
+            return self.un("op_abs", a) if self.raw else fn_e("abs", [a])
         if self.s[self.i].isalpha():
             # 名前は**英字の連なりだけ**（数字は含めない。`x2` は x*2 と読む）
             name = ""

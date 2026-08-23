@@ -1094,6 +1094,13 @@ struct Parser {
       }
       return num(Rat(v));
     }
+    // **|x - 1| の書き方**（教科書はこう書く）。abs(...) と同じ木にする
+    if (peek('|')) {
+      eat('|');
+      const E a = parse_add();
+      if (!eat('|')) err = "絶対値の | が閉じていません";
+      return raw ? un("op_abs", a) : fn_e("abs", {a});
+    }
     if (isalpha((unsigned char)s[i])) {
       // 名前は**英字の連なりだけ**（数字は含めない。`x2` は x*2 と読む）
       std::string name;

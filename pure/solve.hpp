@@ -223,6 +223,17 @@ inline bool solve_special(const ex::E& lhs, const ex::E& rhs, const std::string&
                           Solution& r);
 
 // var を含むか
+inline Solution solve_ineq(const ex::E& in, const std::string& want_var);
+inline std::vector<Range> as_ranges(const Solution& s);
+inline Solution solve_sys_ineq(const std::vector<ex::E>& rels, const std::string& want_var);
+
+// 片側が abs(f) の形か（係数 1 のときだけ扱う。2|x| は未対応）
+inline bool as_abs(const ex::E& e, ex::E& inner) {
+  if (e->k != ex::Kind::Fn || e->name != "abs" || e->kids.size() != 1) return false;
+  inner = e->kids[0];
+  return true;
+}
+
 inline bool has_v(const ex::E& e, const std::string& var) {
   if (e->k == ex::Kind::Sym) return e->name == var;
   for (const ex::E& k : e->kids)
@@ -685,6 +696,60 @@ inline void solve_quad_ineq(Solution& r, std::vector<ex::Rat> c, std::string op,
   }
 }
 
+// |f| < c などの不等式。c は変数を含まない数のときだけ扱う（教科書の基本形）
+inline bool solve_abs_ineq(const ex::E& in, const std::string& var, Solution& r) {
+  using namespace ex;
+  std::string op = in->name;
+  E lhs = in->kids[0], rhs = in->kids[1];
+  E f;
+  if (!as_abs(lhs, f)) {                             // 3 > |x| のように左右が逆の形
+    if (!as_abs(rhs, f)) return false;
+    std::swap(lhs, rhs);
+    op = flip_op(op);
+  }
+  E dummy;
+  if (as_abs(rhs, dummy) || has_v(rhs, var)) return false;
+  const E c = simp(rhs);
+  if (!is_num(c)) return false;
+  const bool ge = op == ">" || op == ">=";
+  const bool with_eq = op == ">=" || op == "<=";
+  r.var = var;
+  r.ok = true;
+  if (c->num.neg()) {                                // |A| は 0 以上なので、比べるまでもない
+    push(r.steps, "絶対値の性質", "|A| は 0 以上なので、負の数との大小はすぐ決まる", in, in);
+    r.kind = ge ? "all" : "empty";
+    return true;
+  }
+  if (!ge) {                                         // |A| < c  ->  -c < A < c
+    const E lo = simp(neg(c));
+    push(r.steps, "絶対値をはずす", "|A| < c は -c < A < c と同じ", in,
+         sys({rel(with_eq ? ">=" : ">", f, lo), rel(with_eq ? "<=" : "<", f, c)}));
+    const Solution s1 = solve_sys_ineq({rel(with_eq ? ">=" : ">", f, lo),
+                                        rel(with_eq ? "<=" : "<", f, c)}, var);
+    if (!s1.ok) return false;
+    for (const Step& st : s1.steps) r.steps.push_back(st);
+    r.kind = s1.kind;
+    r.lo = s1.lo; r.hi = s1.hi; r.lo_eq = s1.lo_eq; r.hi_eq = s1.hi_eq;
+    r.ranges = s1.ranges;
+    r.roots = s1.roots;
+    return true;
+  }
+  // |A| > c  ->  A < -c または A > c
+  const E lo = simp(neg(c));
+  push(r.steps, "絶対値をはずす", "|A| > c は A < -c または A > c と同じ", in,
+       sys({rel(with_eq ? "<=" : "<", f, lo), rel(with_eq ? ">=" : ">", f, c)}));
+  const Solution sa = solve_ineq(rel(with_eq ? "<=" : "<", f, lo), var);
+  const Solution sb = solve_ineq(rel(with_eq ? ">=" : ">", f, c), var);
+  if (!sa.ok || !sb.ok) return false;
+  for (const Step& st : sa.steps) r.steps.push_back(st);
+  for (const Step& st : sb.steps) r.steps.push_back(st);
+  std::vector<Range> rs = as_ranges(sa);
+  for (const Range& g : as_ranges(sb)) rs.push_back(g);
+  r.ranges = rs;
+  r.kind = "inequality";
+  return true;
+}
+
 inline Solution solve_ineq(const ex::E& in, const std::string& want_var = "") {
   using namespace ex;
   Solution r;
@@ -705,7 +770,13 @@ inline Solution solve_ineq(const ex::E& in, const std::string& want_var = "") {
   if (syms.size() > 1) { r.why = "変数が 2 つ以上あります（連立にするなら , で区切る）"; return r; }
 
   std::vector<Rat> c;
-  if (!poly_coeffs(diff0, r.var, c)) { r.why = "一次式に落とせません"; return r; }
+  if (!poly_coeffs(diff0, r.var, c)) {
+    Solution r2;
+    r2.var = r.var;
+    if (solve_abs_ineq(in, r.var, r2)) return r2;    // |x - 1| < 2 のような形
+    r.why = "一次式に落とせません";
+    return r;
+  }
   while (c.size() > 1 && c.back().is_zero()) c.pop_back();
   const size_t deg = c.empty() ? 0 : c.size() - 1;
   if (deg > 2) { r.why = "三次以上の不等式は未対応"; return r; }
@@ -1339,8 +1410,49 @@ inline bool solve_trig_eq(const ex::E& lhs, const ex::E& rhs, const std::string&
   return true;
 }
 
+// |f| = g の方程式。**両方の場合を解いて、g >= 0 になる解だけ残す**（教科書の場合分け）
+inline bool solve_abs_eq(const ex::E& lhs, const ex::E& rhs, const std::string& var, int depth,
+                         Solution& r) {
+  using namespace ex;
+  E f;
+  E g = rhs;
+  if (!as_abs(lhs, f)) {
+    if (!as_abs(rhs, f)) return false;
+    g = lhs;
+  }
+  E dummy;
+  if (as_abs(g, dummy)) return false;                // 両辺に絶対値がある形は未対応
+  push(r.steps, "絶対値をはずす",
+       "|A| = B は A = B または A = -B（ただし B >= 0）", eq(lhs, rhs),
+       sys({eq(f, g), eq(f, neg(g))}));
+  std::vector<E> cand;
+  for (int sgn = 0; sgn < 2; ++sgn) {
+    const E rhs2 = sgn ? simp(neg(g)) : g;
+    const Solution s2 = solve_eq(eq(f, rhs2), var, depth + 1);
+    if (!s2.ok) return false;
+    for (const E& t : s2.roots) cand.push_back(t);
+  }
+  for (const E& t : cand) {
+    const E v = simp(subst(g, var, t));
+    if (has_v(v, var)) return false;
+    if (approx(v) < -1e-12) {                        // B < 0 なので、この解は成り立たない
+      push(r.steps, "確かめる", var + " = " + to_infix(t) + " は右辺が負になるので捨てる", t, t);
+      continue;
+    }
+    bool dup = false;
+    for (const E& u : r.roots)
+      if (equal(t, u)) { dup = true; break; }
+    if (!dup) r.roots.push_back(t);
+  }
+  r.ok = true;
+  r.kind = r.roots.empty() ? "empty" : "abs";
+  return true;
+}
+
 inline bool solve_special(const ex::E& lhs, const ex::E& rhs, const std::string& var, int depth,
                           Solution& r) {
+  if (solve_abs_eq(lhs, rhs, var, depth, r)) return true;
+  r.steps.clear();
   if (solve_trig_eq(lhs, rhs, var, r)) return true;
   r.steps.clear();
   if (solve_log_eq(lhs, rhs, var, depth, r)) return true;

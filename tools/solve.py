@@ -269,6 +269,13 @@ def rational_roots(c_in):
     return (out, [X.Rat(v) for v in a])
 
 
+def as_abs(e):
+    """片側が abs(f) の形か（係数 1 のときだけ扱う。2|x| は未対応）。"""
+    if e.k != X.FN or e.name != "abs" or len(e.kids) != 1:
+        return None
+    return e.kids[0]
+
+
 def has_v(e, var):
     """var を含むか。"""
     if e.k == X.SYM:
@@ -642,6 +649,10 @@ def solve_ineq(e_in, want_var=""):
 
     c = []
     if not poly_coeffs(diff0, s.var, c):
+        r2 = Solution()
+        r2.var = s.var
+        if solve_abs_ineq(e_in, s.var, r2):          # |x - 1| < 2 のような形
+            return r2
         s.why = "一次式に落とせません"
         return s
     while len(c) > 1 and c[-1].is_zero():
@@ -1261,7 +1272,100 @@ def solve_trig_eq(lhs, rhs, var, r):
     return True
 
 
+def solve_abs_eq(lhs, rhs, var, depth, r):
+    """|f| = g の方程式。**両方の場合を解いて、g >= 0 になる解だけ残す**（教科書の場合分け）。"""
+    f = as_abs(lhs)
+    g = rhs
+    if f is None:
+        f = as_abs(rhs)
+        if f is None:
+            return False
+        g = lhs
+    if as_abs(g) is not None:
+        return False                                 # 両辺に絶対値がある形は未対応
+    r.steps.append(Step("絶対値をはずす", "|A| = B は A = B または A = -B（ただし B >= 0）",
+                        X.eq(lhs, rhs), X.sys_of([X.eq(f, g), X.eq(f, X.neg(g))])))
+    cand = []
+    for sgn in (0, 1):
+        rhs2 = X.simp(X.neg(g)) if sgn else g
+        s2 = solve_eq(X.eq(f, rhs2), var, depth + 1)
+        if not s2.ok:
+            return False
+        cand.extend(s2.roots)
+    for t in cand:
+        v = X.simp(X.subst(g, var, t))
+        if has_v(v, var):
+            return False
+        if X.approx(v) < -1e-12:                     # B < 0 なので、この解は成り立たない
+            r.steps.append(Step("確かめる",
+                                "%s = %s は右辺が負になるので捨てる" % (var, X.to_infix(t)), t, t))
+            continue
+        if not any(X.equal(t, u) for u in r.roots):
+            r.roots.append(t)
+    r.ok = True
+    r.kind = "empty" if not r.roots else "abs"
+    return True
+
+
+def solve_abs_ineq(in_e, var, r):
+    """|f| < c などの不等式。c は変数を含まない数のときだけ扱う（教科書の基本形）。"""
+    op = in_e.name
+    lhs, rhs = in_e.kids
+    f = as_abs(lhs)
+    if f is None:                                    # 3 > |x| のように左右が逆の形
+        f = as_abs(rhs)
+        if f is None:
+            return False
+        lhs, rhs = rhs, lhs
+        op = X.flip_op(op)
+    if as_abs(rhs) is not None or has_v(rhs, var):
+        return False
+    c = X.simp(rhs)
+    if not X.is_num(c):
+        return False
+    ge = op in (">", ">=")
+    with_eq = op in (">=", "<=")
+    r.var = var
+    r.ok = True
+    if c.num.neg():                                  # |A| は 0 以上なので、比べるまでもない
+        r.steps.append(Step("絶対値の性質", "|A| は 0 以上なので、負の数との大小はすぐ決まる",
+                            in_e, in_e))
+        r.kind = "all" if ge else "empty"
+        return True
+    lo = X.simp(X.neg(c))
+    if not ge:                                       # |A| < c  ->  -c < A < c
+        r1 = X.rel(">=" if with_eq else ">", f, lo)
+        r2 = X.rel("<=" if with_eq else "<", f, c)
+        r.steps.append(Step("絶対値をはずす", "|A| < c は -c < A < c と同じ", in_e,
+                            X.sys_of([r1, r2])))
+        s1 = solve_sys_ineq([r1, r2], var)
+        if not s1.ok:
+            return False
+        r.steps.extend(s1.steps)
+        r.kind = s1.kind
+        r.lo, r.hi, r.lo_eq, r.hi_eq = s1.lo, s1.hi, s1.lo_eq, s1.hi_eq
+        r.ranges = s1.ranges
+        r.roots = s1.roots
+        return True
+    # |A| > c  ->  A < -c または A > c
+    ra = X.rel("<=" if with_eq else "<", f, lo)
+    rb = X.rel(">=" if with_eq else ">", f, c)
+    r.steps.append(Step("絶対値をはずす", "|A| > c は A < -c または A > c と同じ", in_e,
+                        X.sys_of([ra, rb])))
+    sa, sb = solve_ineq(ra, var), solve_ineq(rb, var)
+    if not sa.ok or not sb.ok:
+        return False
+    r.steps.extend(sa.steps)
+    r.steps.extend(sb.steps)
+    r.ranges = as_ranges(sa) + as_ranges(sb)
+    r.kind = "inequality"
+    return True
+
+
 def solve_special(lhs, rhs, var, depth, r):
+    if solve_abs_eq(lhs, rhs, var, depth, r):
+        return True
+    r.steps = []
     if solve_trig_eq(lhs, rhs, var, r):
         return True
     r.steps = []
