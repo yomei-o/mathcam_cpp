@@ -27,6 +27,7 @@
 #include "trig.hpp"
 #include "recur.hpp"
 #include "circle.hpp"
+#include "vector.hpp"
 #include "typeset_impl.hpp"
 #include "gen_expr.hpp"
 #include "parse_layout.hpp"
@@ -574,6 +575,49 @@ static int cmd_circle(int argc, char** argv) {
       printf("%zu. [%s] %s\n   %s\n", i + 1, r.steps[i].rule.c_str(), r.steps[i].note.c_str(),
              (latex ? ex::to_latex(r.steps[i].after) : ex::to_infix(r.steps[i].after)).c_str());
   for (const std::string& line : cir::answer_lines(r, latex)) printf("%s\n", line.c_str());
+  return r.ok ? 0 : 1;
+}
+
+// mathcam vec — ベクトル（内積・大きさ・なす角・平行と垂直）
+static std::vector<ex::E> parse_vec(const std::string& s, std::string& why) {
+  std::vector<ex::E> v;
+  std::string cur;
+  for (size_t i = 0; i <= s.size(); ++i) {
+    if (i == s.size() || s[i] == ',') {
+      if (!cur.empty()) {
+        std::string w;
+        const ex::E e = ex::parse(cur, &w);
+        if (!w.empty()) { why = w; return {}; }
+        v.push_back(e);
+      }
+      cur.clear();
+      continue;
+    }
+    cur += s[i];
+  }
+  return v;
+}
+
+static int cmd_vec(int argc, char** argv) {
+  const std::string sa = arg_of(argc, argv, "--a", "");
+  const std::string sb = arg_of(argc, argv, "--b", "");
+  const bool steps = has_flag(argc, argv, "--steps");
+  const bool latex = has_flag(argc, argv, "--latex");
+  if (sa.empty() || sb.empty()) {
+    printf("usage: mathcam vec --a \"1, 2\" --b \"3, 4\" [--steps] [--latex]\n");
+    return 1;
+  }
+  std::string why;
+  const std::vector<ex::E> a = parse_vec(sa, why);
+  if (!why.empty()) { printf("parse error(--a): %s\n", why.c_str()); return 1; }
+  const std::vector<ex::E> b = parse_vec(sb, why);
+  if (!why.empty()) { printf("parse error(--b): %s\n", why.c_str()); return 1; }
+  const vec::Result r = vec::analyze(a, b);
+  if (steps)
+    for (size_t i = 0; i < r.steps.size(); ++i)
+      printf("%zu. [%s] %s\n   %s\n", i + 1, r.steps[i].rule.c_str(), r.steps[i].note.c_str(),
+             (latex ? ex::to_latex(r.steps[i].after) : ex::to_infix(r.steps[i].after)).c_str());
+  for (const std::string& line : vec::answer_lines(r, latex)) printf("%s\n", line.c_str());
   return r.ok ? 0 : 1;
 }
 
@@ -1285,7 +1329,7 @@ int main(int argc, char** argv) {
   }
 #endif
   if (argc < 2) {
-    printf("usage: mathcam <eval|solve|diff|integ|sum|seq|factor|curve|limit|area|trig|recur|apart|circle|render|dataset|parse|selftest|photo> ...\n");
+    printf("usage: mathcam <eval|solve|diff|integ|sum|seq|factor|curve|limit|area|trig|recur|apart|circle|vec|render|dataset|parse|selftest|photo> ...\n");
     return 1;
   }
   const std::string cmd = argv[1];
@@ -1304,6 +1348,7 @@ int main(int argc, char** argv) {
   if (cmd == "recur") return cmd_recur(argc, argv);
   if (cmd == "apart") return cmd_apart(argc, argv);
   if (cmd == "circle") return cmd_circle(argc, argv);
+  if (cmd == "vec") return cmd_vec(argc, argv);
   if (cmd == "render") return cmd_render(argc, argv);
   if (cmd == "dataset") return cmd_dataset(argc, argv);
   if (cmd == "genexpr") return cmd_genexpr(argc, argv);

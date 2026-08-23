@@ -73,6 +73,7 @@ python tools/parity/area.py   --n 150  # 面積
 python tools/parity/trig.py   --n 200  # 三角関数の変形（加法定理・2 倍角・合成）
 python tools/parity/recur.py  --n 200  # 漸化式（一般項を必ず検算する）
 python tools/parity/circle.py --n 200  # 円の方程式（中心と半径）
+python tools/parity/vector.py --n 200  # ベクトル（内積・大きさ・なす角）
 python tools/parity/layout.py --n 300  # 枠 -> 式（レイアウト解析）と、組版 -> 解析の往復
 python tools/parity/photo.py  --n 20   # 写真 1 枚の道（自作ランタイム vs onnxruntime）
 ```
@@ -138,6 +139,10 @@ python tools/parity/photo.py  --n 20   # 写真 1 枚の道（自作ランタイ
 
 # 図形と方程式（数学 II）
 ./mathcam.exe circle --expr "x^2 + y^2 - 4x + 2y - 4 = 0"   # 中心 (2, -1)、半径 3
+
+# ベクトル（数学 B / C）
+./mathcam.exe vec --a "1, 0" --b "1, 1"             # 内積 1、なす角 pi/4
+./mathcam.exe vec --a "1, 2" --b "2, -1"            # 垂直（内積が 0）
 
 # 場合の数（数学 A）
 ./mathcam.exe eval --expr "C(10, 3) + 5!"           # 240
