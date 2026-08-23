@@ -24,6 +24,7 @@
 #include "curve.hpp"
 #include "limit.hpp"
 #include "area.hpp"
+#include "trig.hpp"
 #include "typeset_impl.hpp"
 #include "gen_expr.hpp"
 #include "parse_layout.hpp"
@@ -479,6 +480,29 @@ static int cmd_area(int argc, char** argv) {
       printf("%zu. [%s] %s\n   %s\n", i + 1, r.steps[i].rule.c_str(), r.steps[i].note.c_str(),
              (latex ? ex::to_latex(r.steps[i].after) : ex::to_infix(r.steps[i].after)).c_str());
   for (const std::string& line : area::answer_lines(r, latex)) printf("%s\n", line.c_str());
+  return r.ok ? 0 : 1;
+}
+
+// mathcam trig — 三角関数の変形（加法定理・2 倍角・合成）
+static int cmd_trig(int argc, char** argv) {
+  const std::string src = arg_of(argc, argv, "--expr", "");
+  const std::string mode = arg_of(argc, argv, "--mode", "auto");
+  const bool steps = has_flag(argc, argv, "--steps");
+  const bool latex = has_flag(argc, argv, "--latex");
+  if (src.empty()) {
+    printf("usage: mathcam trig --expr \"sin(x) + sqrt(3)cos(x)\" [--mode expand|compose]\n"
+           "                    [--steps] [--latex]\n");
+    return 1;
+  }
+  std::string why;
+  const ex::E e = ex::parse(src, &why);
+  if (!why.empty()) { printf("parse error: %s\n", why.c_str()); return 1; }
+  const trg::Result r = trg::transform(e, mode);
+  if (steps)
+    for (size_t i = 0; i < r.steps.size(); ++i)
+      printf("%zu. [%s] %s\n   %s\n", i + 1, r.steps[i].rule.c_str(), r.steps[i].note.c_str(),
+             (latex ? ex::to_latex(r.steps[i].after) : ex::to_infix(r.steps[i].after)).c_str());
+  for (const std::string& line : trg::answer_lines(r, latex)) printf("%s\n", line.c_str());
   return r.ok ? 0 : 1;
 }
 
@@ -1190,7 +1214,7 @@ int main(int argc, char** argv) {
   }
 #endif
   if (argc < 2) {
-    printf("usage: mathcam <eval|solve|diff|integ|sum|seq|factor|curve|limit|area|render|dataset|parse|selftest|photo> ...\n");
+    printf("usage: mathcam <eval|solve|diff|integ|sum|seq|factor|curve|limit|area|trig|render|dataset|parse|selftest|photo> ...\n");
     return 1;
   }
   const std::string cmd = argv[1];
@@ -1205,6 +1229,7 @@ int main(int argc, char** argv) {
   if (cmd == "curve") return cmd_curve(argc, argv);
   if (cmd == "limit") return cmd_limit(argc, argv);
   if (cmd == "area") return cmd_area(argc, argv);
+  if (cmd == "trig") return cmd_trig(argc, argv);
   if (cmd == "render") return cmd_render(argc, argv);
   if (cmd == "dataset") return cmd_dataset(argc, argv);
   if (cmd == "genexpr") return cmd_genexpr(argc, argv);

@@ -70,6 +70,7 @@ python tools/parity/factor.py --n 200  # 因数分解（答えが元の式と等
 python tools/parity/curve.py  --n 200  # 接線・極値・平方完成
 python tools/parity/limit.py  --n 200  # 極限
 python tools/parity/area.py   --n 150  # 面積
+python tools/parity/trig.py   --n 200  # 三角関数の変形（加法定理・2 倍角・合成）
 python tools/parity/layout.py --n 300  # 枠 -> 式（レイアウト解析）と、組版 -> 解析の往復
 python tools/parity/photo.py  --n 20   # 写真 1 枚の道（自作ランタイム vs onnxruntime）
 ```
@@ -115,6 +116,8 @@ python tools/parity/photo.py  --n 20   # 写真 1 枚の道（自作ランタイ
 ./mathcam.exe solve --expr "sin(x) = 1/2"           # x = pi/6, 5pi/6（0 <= x < 2pi）
 ./mathcam.exe solve --expr "2^(x+1) = 4^x"          # x = 1
 ./mathcam.exe solve --expr "log(2,x) + log(2,x-2) = 3"   # x = 4（真数条件で -2 を捨てる）
+./mathcam.exe trig  --expr "sin(x) + sqrt(3)cos(x)"  # 2 sin(x + pi/3)（合成）
+./mathcam.exe trig  --expr "sin(2x)"                 # 2 sin(x) cos(x)（2 倍角）
 
 # 高次方程式・複素数・絶対値
 ./mathcam.exe solve --expr "x^3 + 1 = 0"            # x = -1, 1/2 ± (sqrt(3)/2)i
