@@ -21,6 +21,7 @@
 #include "calc.hpp"
 #include "seq.hpp"
 #include "factor.hpp"
+#include "curve.hpp"
 #include "typeset_impl.hpp"
 #include "gen_expr.hpp"
 #include "parse_layout.hpp"
@@ -378,6 +379,35 @@ static int cmd_factor(int argc, char** argv) {
       printf("%zu. [%s] %s\n   %s\n", i + 1, r.steps[i].rule.c_str(), r.steps[i].note.c_str(),
              (latex ? ex::to_latex(r.steps[i].after) : ex::to_infix(r.steps[i].after)).c_str());
   for (const std::string& line : fac::answer_lines(r, latex)) printf("%s\n", line.c_str());
+  return r.ok ? 0 : 1;
+}
+
+// mathcam curve — 関数を調べる（微分の応用: 接線と極値）
+static int cmd_curve(int argc, char** argv) {
+  const std::string src = arg_of(argc, argv, "--expr", "");
+  const std::string var = arg_of(argc, argv, "--var", "");
+  const std::string at = arg_of(argc, argv, "--at", "");
+  const bool steps = has_flag(argc, argv, "--steps");
+  const bool latex = has_flag(argc, argv, "--latex");
+  if (src.empty()) {
+    printf("usage: mathcam curve --expr \"x^3 - 3x\" [--var x] [--at 1] [--steps] [--latex]\n"
+           "       --at を付けると、その点の接線と法線も出す\n");
+    return 1;
+  }
+  std::string why;
+  const ex::E e = ex::parse(src, &why);
+  if (!why.empty()) { printf("parse error: %s\n", why.c_str()); return 1; }
+  ex::E a;
+  if (!at.empty()) {
+    a = ex::parse(at, &why);
+    if (!why.empty()) { printf("parse error(--at): %s\n", why.c_str()); return 1; }
+  }
+  const crv::Result r = crv::curve(e, var, a);
+  if (steps)
+    for (size_t i = 0; i < r.steps.size(); ++i)
+      printf("%zu. [%s] %s\n   %s\n", i + 1, r.steps[i].rule.c_str(), r.steps[i].note.c_str(),
+             (latex ? ex::to_latex(r.steps[i].after) : ex::to_infix(r.steps[i].after)).c_str());
+  for (const std::string& line : crv::answer_lines(r, latex)) printf("%s\n", line.c_str());
   return r.ok ? 0 : 1;
 }
 
@@ -1089,7 +1119,7 @@ int main(int argc, char** argv) {
   }
 #endif
   if (argc < 2) {
-    printf("usage: mathcam <eval|solve|diff|integ|sum|seq|factor|render|dataset|parse|selftest|photo> ...\n");
+    printf("usage: mathcam <eval|solve|diff|integ|sum|seq|factor|curve|render|dataset|parse|selftest|photo> ...\n");
     return 1;
   }
   const std::string cmd = argv[1];
@@ -1101,6 +1131,7 @@ int main(int argc, char** argv) {
   if (cmd == "sum") return cmd_sum(argc, argv);
   if (cmd == "seq") return cmd_seq(argc, argv);
   if (cmd == "factor") return cmd_factor(argc, argv);
+  if (cmd == "curve") return cmd_curve(argc, argv);
   if (cmd == "render") return cmd_render(argc, argv);
   if (cmd == "dataset") return cmd_dataset(argc, argv);
   if (cmd == "genexpr") return cmd_genexpr(argc, argv);
