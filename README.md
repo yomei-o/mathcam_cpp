@@ -164,7 +164,31 @@ python tools/parity/photo.py  --n 20   # 写真 1 枚の道（自作ランタイ
 ./mathcam.exe e2e --n 120           # 検出 -> 解析 -> solve（端から端まで）
 ```
 
-検出器の学習は Python（Ultralytics）:
+検出器の学習は**どちらの言語でもできる**（ここが最後まで Python だけだった）:
+
+```sh
+# C++ で学習する（ONNX をその場で更新する。PyTorch も Ultralytics も要らない）
+./mathcam.exe dataset --out data/train --n 2000
+./mathcam.exe train-det --data data/train --steps 200 --batch 8 --export models/new.onnx
+./mathcam.exe train-det --gradcheck        # 損失の勾配を数値微分と突き合わせる
+./mathcam.exe build-det --out models/fresh.onnx   # まっさらな yolov8n を書く
+
+# 損失が Ultralytics のものと同じかを確かめる（同じ数を両方に食わせる）
+./mathcam.exe train-det --data data/train --steps 1 --dump-fixture scratch/det_fix.bin
+python tools/parity/train_det.py --fixture scratch/det_fix.bin
+```
+
+Kaggle の T4 で測った（nvcc でビルドすると同じソースが GPU で動く）:
+
+| | 12 step（batch 4, imgsz 640） |
+|---|---|
+| CPU（g++、Kaggle の 4 コア） | 3 分 57 秒 |
+| GPU（nvcc、Tesla T4） | **1 分 3 秒**（3.8 倍） |
+
+損失の値は両方で完全に一致する（7.159093）。device の切り替えは `pure/backend.hpp` の
+`bk::gemm_hosted` だけで、計算の中身は同じソースが動く。
+
+検出器の学習は Python（Ultralytics）でもできる:
 
 ```sh
 ./mathcam.exe dataset --out data/train --n 20000   # 合成データ。外部データセットは要らない

@@ -633,6 +633,10 @@ static int cmd_vec(int argc, char** argv) {
 // （box は [B,4*reg_max,H,W]、cls は [B,nc,H,W]）が普通のノードとして残っている。その手前で
 // 止めて損失をつなげば、backward が全部の重みに届く。もう 1 つのアーキテクチャ定義は要らない。
 
+static double e2e_rate(const onx::Graph& g, const ts::Font& font, const ts::Font* font_i,
+                       const ts::Style& st, int n, uint64_t seed, int px_min, int px_max,
+                       int imgsz, float conf);
+
 // mathcam train-det --gradcheck — 損失の勾配を数値微分と突き合わせる
 static int cmd_train_det_gradcheck(int argc, char** argv) {
   const uint64_t seed = strtoull(arg_of(argc, argv, "--seed", "7").c_str(), nullptr, 10);
@@ -757,6 +761,9 @@ static int cmd_train_det(int argc, char** argv) {
   const float close_mosaic = (float)atof(arg_of(argc, argv, "--close-mosaic", "0.1").c_str());
   const uint64_t seed = strtoull(arg_of(argc, argv, "--seed", "1234").c_str(), nullptr, 10);
   const float clip = (float)atof(arg_of(argc, argv, "--clip", "10.0").c_str());   // ultralytics と同じ
+  const int val_every = std::atoi(arg_of(argc, argv, "--val-every", "0").c_str());
+  const int val_n = std::atoi(arg_of(argc, argv, "--val-n", "40").c_str());
+  const std::string out_best = arg_of(argc, argv, "--export-best", "");
   const bool cos_lr = has_flag(argc, argv, "--cos-lr");
   const bool no_aug = has_flag(argc, argv, "--no-aug");
   const bool no_ema = has_flag(argc, argv, "--no-ema");
@@ -821,10 +828,51 @@ static int cmd_train_det(int argc, char** argv) {
            bn_nodes ? (bn_train ? "学習する" : "止める") : "無し（畳み込み済み）");
   }
 
-  SGD sgd(t.params, lr0, momentum, wd, true);
-  Adam adam(t.params, lr0, 0.9f, 0.999f, 1e-8f, wd, true);
   const bool use_sgd = optim != "adam";
   Ema ema(t.params, ema_decay);
+  SGD sgd(t.params, lr0, momentum, wd, true);
+  Adam adam(t.params, lr0, 0.9f, 0.999f, 1e-8f, wd, true);
+
+  // 検証（--val-every）。**端から端までの正解率**で測る。合成の式を毎回同じ種で作るので、
+  // step をまたいで比べられる
+  ts::Font vfont;
+  bool have_vfont = false;
+  const ts::Style vst = style_of(argc, argv);
+  if (val_every > 0 || !out_best.empty()) {
+    std::string vw;
+    have_vfont = ts::load_font(vfont, arg_of(argc, argv, "--font", ""), &vw);
+    if (!have_vfont) printf("検証は使えません（フォントが読めない: %s）\n", vw.c_str());
+  }
+  std::map<std::string, std::vector<float>> best_snap;
+  double best_rate = -1.0;
+  int best_step = 0;
+  const auto snapshot = [&]() {
+    std::map<std::string, std::vector<float>> m;
+    for (const auto& kv : t.init) m[kv.first] = kv.second->data;
+    return m;
+  };
+  const auto restore = [&](const std::map<std::string, std::vector<float>>& m) {
+    for (const auto& kv : m) {
+      auto it = t.init.find(kv.first);
+      if (it != t.init.end()) it->second->data = kv.second;
+    }
+  };
+  const auto validate = [&](int step) {
+    if (!have_vfont) return;
+    if (!no_ema) ema.swap();
+    onx::write_back(t);
+    const double rate = e2e_rate(t.g, vfont, nullptr, vst, val_n, 12345, 28, 72, imgsz, 0.20f);
+    printf("  val @%d: 端から端まで %.1f%%（%d 件）%s\n", step, 100.0 * rate, val_n,
+           rate > best_rate ? "  <- best" : "");
+    if (rate > best_rate) {
+      best_rate = rate;
+      best_step = step;
+      best_snap = snapshot();                        // EMA を入れ替えた状態で覚える
+    }
+    if (!no_ema) ema.swap();
+    fflush(stdout);
+  };
+
   Rng rng(seed);
   det::LossCfg cfg;
   double first = 0, last = 0;
@@ -893,8 +941,19 @@ static int cmd_train_det(int argc, char** argv) {
     if (use_sgd) sgd.step(); else adam.step();
     if (!no_ema) ema.update();
     free_graph(loss);
+    if (val_every > 0 && (step + 1) % val_every == 0) validate(step + 1);
   }
+  if (have_vfont && (val_every <= 0 || steps % val_every != 0)) validate(steps);   // 最後に 1 回
   if (!dump_loss) printf("loss %.4f -> %.4f（%d step）\n", first, last, steps);
+  if (!out_best.empty() && !best_snap.empty()) {
+    const std::map<std::string, std::vector<float>> live = snapshot();
+    restore(best_snap);
+    onx::write_back(t);
+    onx::save_onnx(t.g, out_best);
+    printf("wrote %s（いちばん良かった step %d、端から端まで %.1f%%）\n", out_best.c_str(),
+           best_step, 100.0 * best_rate);
+    restore(live);
+  }
   if (!out.empty()) {
     if (!no_ema) ema.swap();
     onx::write_back(t);
@@ -1276,6 +1335,32 @@ static int cmd_fontinfo(int argc, char** argv) {
 // 式木 -> solve -> 手順。推論ライブラリは使わない（pure/onnx_run.hpp）。
 // mathcam e2e — 端から端までの正解率。式を作る -> 組版 -> **検出** -> 解析 -> 元の式と比べる。
 // selftest（組版 -> 解析）との差が、検出器のぶんの損失になる。
+// 端から端まで（組版 -> 検出 -> レイアウト解析 -> 式）の正解率。学習中の検証にも使う。
+// **同じ種で同じ式を作る**ので、step が進んでも比べているものは変わらない。
+static double e2e_rate(const onx::Graph& g, const ts::Font& font, const ts::Font* font_i,
+                       const ts::Style& st, int n, uint64_t seed, int px_min, int px_max,
+                       int imgsz, float conf) {
+  Rng rng(seed);
+  int ok = 0, tried = 0;
+  std::string why;
+  for (int i = 0; i < n; ++i) {
+    const std::string src = gx::one(rng);
+    const int px = px_min + (int)rng.below((uint64_t)(px_max - px_min + 1));
+    const ex::E e = ex::parse(src, &why);
+    if (!why.empty()) { why.clear(); continue; }
+    const ts::Rendered R = ts::render(font, font_i, e, px, st);
+    std::vector<unsigned char> rgb((size_t)R.w * R.h * 3);
+    for (size_t k = 0; k < (size_t)R.w * R.h; ++k)
+      rgb[k * 3] = rgb[k * 3 + 1] = rgb[k * 3 + 2] = R.gray[k];
+    const pipeln::Detected d =
+        pipeln::detect_syms(g, rgb.data(), R.w, R.h, imgsz, conf, 0.45f, BoxFmt::CXCYWH);
+    const pl::Result r = pl::parse(d.syms);
+    ++tried;
+    if (r.ok && ex::equal(ex::expand(r.e), ex::expand(e))) ++ok;
+  }
+  return tried ? (double)ok / tried : 0.0;
+}
+
 static int cmd_e2e(int argc, char** argv) {
   const int n = std::atoi(arg_of(argc, argv, "--n", "50").c_str());
   const uint64_t seed = strtoull(arg_of(argc, argv, "--seed", "1").c_str(), nullptr, 10);
