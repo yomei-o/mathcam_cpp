@@ -270,6 +270,30 @@ def mul_n(xs):
             out.append(b)
             continue
         out.append(raw(POW, [b, e]))
+    # **同じ次数の根はまとめる**（sqrt(2)*sqrt(3) = sqrt(6)）。教科書はそう書くし、
+    # まとめないと sqrt(3)/sqrt(2) が有理化されない（1/sqrt(2) は sqrt(2)/2 になるのに、
+    # 根どうしの割り算だけ残ってしまう）。
+    rads = []                                        # (次数 q, 中身の積) を現れた順に
+    keep = []
+    merged = False
+    for f in out:
+        r = num_radical(f)
+        if r is not None:
+            q, inside = r
+            hit = False
+            for i, pr in enumerate(rads):
+                if pr[0] == q:
+                    rads[i] = (q, pr[1] * inside)
+                    hit = merged = True
+                    break
+            if not hit:
+                rads.append((q, inside))
+            continue
+        keep.append(f)
+    if merged:
+        xs = ([] if coef.is_one() else [num(coef)]) + keep
+        xs += [pow_e(num(inside), num(Rat(1, q))) for q, inside in rads]
+        return mul_n(xs)
     if not out:
         return num(coef)
     if not coef.is_one():
@@ -280,22 +304,26 @@ def mul_n(xs):
     return raw(MUL, out)
 
 
-def _iroot(v, k):
-    """v の k 乗根が整数なら返す。C++ 側と同じ「試して確かめる」やり方。"""
-    if v < 0:
+def mul_safe(a, b):
+    """掛け算のあふれ検査（根の中身 n^p' * d^(q-p') を作るときに使う）。
+
+    Python は多倍長なので溢れないが、**C++ 側と同じところで諦めないと答えが変わる**ので
+    同じ上限で切る。
+    """
+    if a == 0 or b == 0:
+        return 0
+    if a > 4000000000000000 // abs(b):
         return None
-    r = round(v ** (1.0 / k)) if v else 0
-    for c in range(max(0, r - 2), r + 3):
-        q = 1
-        ovf = False
-        for _ in range(k):
-            q *= c
-            if q > (1 << 40):
-                ovf = True
-                break
-        if not ovf and q == v:
-            return c
-    return None
+    return a * b
+
+
+def num_radical(f):
+    """「数の 1/q 乗」か（sqrt(2) や 6^(1/3)）。そうなら (q, 中身)、違えば None。"""
+    if f.k != POW or not is_num(f.kids[0]) or not is_num(f.kids[1]):
+        return None
+    if f.kids[1].num.n != 1 or f.kids[1].num.d <= 1:
+        return None
+    return (f.kids[1].num.d, f.kids[0].num)
 
 
 def pow_e(b_in, e_in):
@@ -309,37 +337,59 @@ def pow_e(b_in, e_in):
             e = p.num.n
             if -32 < e < 32 and not (b.num.is_zero() and e < 0):
                 return num(rpow(b.num, e))
-        # まず根号の中の完全冪を外に出す（sqrt(8) -> 2*sqrt(2)）。これをやらないと
-        # x^2 = 2 の答えが 1/2*sqrt(8) と出て、厳密に計算している意味が薄れる
-        if is_num(b) and not p.num.is_int() and not b.num.neg() and p.num.n > 0:
-            q = p.num.d
-            if 1 < q <= 8:
-                def pull(v):
-                    outside, inside = 1, v
-                    f = 2
-                    while f * f <= inside and f < 4096:
-                        pw = f ** q
-                        if pw > 1:
-                            while inside % pw == 0:
-                                inside //= pw
-                                outside *= f
-                        f += 1
-                    return outside, inside
-                on, in_n = pull(b.num.n)
-                od, in_d = pull(b.num.d)
-                if on != 1 or od != 1:
-                    coef = rpow(Rat(on, od), p.num.n)
-                    if in_n == 1 and in_d == 1:
-                        return num(coef)
-                    return mul_n([num(coef), raw(POW, [num(Rat(in_n, in_d)), p])])
-        # 厳密に閉じるなら畳む（sqrt(4)=2）。閉じないもの（sqrt(2)）は残す
+        # **数の根は「有理化して、中身から完全冪を外に出す」形に正規化する**:
+        #   sqrt(8) -> 2 sqrt(2)   sqrt(4) -> 2      sqrt(9/4) -> 3/2
+        #   sqrt(1/2) -> sqrt(2)/2   2^(-1/2) -> sqrt(2)/2   sqrt(2/3) -> sqrt(6)/3
+        # 教科書の答えは**分母に根号を残さない**ので、正規形の側で一度に片づける
+        # （表示のときに直すやり方だと、同じ数が別の木のまま残って差が 0 にならない）。
+        #
+        # やり方: 指数 p/q を「整数部 k」と「0 < p'/q < 1」に分け、
+        #   a^(p'/q) = (n/d)^(p'/q) = (n^p' * d^(q-p'))^(1/q) / d
+        # と書き直す（分母が根の外に出る）。あとは中身から q 乗の因数を外に出すだけ。
         if is_num(b) and not p.num.is_int() and not b.num.neg():
-            root, up = p.num.d, p.num.n
-            if 1 < root <= 8 and -32 < up < 32:
-                rn = _iroot(b.num.n, root)
-                rd = _iroot(b.num.d, root)
-                if rn is not None and rd is not None:
-                    return num(rpow(Rat(rn, rd), up))
+            if b.num.is_zero():
+                if p.num.n > 0:
+                    return num(0)
+            else:
+                q = p.num.d
+                if 1 < q <= 8:
+                    pp = p.num.n
+                    k = pp // q if pp >= 0 else -((-pp + q - 1) // q)   # 負のときは下へ切る
+                    pf = pp - k * q                                     # 0 < pf < q
+                    M = 1
+                    for _ in range(pf):
+                        M = mul_safe(M, b.num.n)
+                        if M is None:
+                            break
+                    if M is not None:
+                        for _ in range(q - pf):
+                            M = mul_safe(M, b.num.d)
+                            if M is None:
+                                break
+                    if M is not None:
+                        s_out, m = 1, M      # M = s^q * m（m は q 乗の因数を持たない）
+                        f = 2
+                        while f * f <= m and f < 4096:
+                            pw = 1
+                            ovf = False
+                            for _ in range(q):
+                                pw *= f
+                                if pw > m:
+                                    ovf = True
+                                    break
+                            if ovf:
+                                break        # これより大きい f では q 乗が中身を超える
+                            while m % pw == 0:
+                                m //= pw
+                                s_out *= f
+                            f += 1
+                        coef = rpow(b.num, k) * Rat(s_out, b.num.d)
+                        if m == 1:
+                            return num(coef)
+                        rest = raw(POW, [num(Rat(m)), num(Rat(1, q))])
+                        if coef.is_one():
+                            return rest
+                        return mul_n([num(coef), rest])
     if b.k == POW:                                            # (a^m)^n = a^(mn)
         inner = b.kids[1]
         # **内側が整数でないなら畳んでよい**（内側が根なら底は 0 以上でしか定義されない）。

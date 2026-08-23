@@ -158,6 +158,25 @@ inline void split_coeff(const E& t, Rat& c, E& rest) {
   else rest = raw(Kind::Mul, others);
 }
 
+inline E pow_e(const E& b_in, const E& e_in);
+
+// 掛け算のあふれ検査（根の中身 n^p' * d^(q-p') を作るときに使う）
+inline bool mul_safe(long long a, long long b, long long& out) {
+  if (a == 0 || b == 0) { out = 0; return true; }
+  if (a > 4000000000000000LL / (b > 0 ? b : -b)) return false;
+  out = a * b;
+  return true;
+}
+
+// 「数の 1/q 乗」か（sqrt(2) や 6^(1/3)）。そうなら次数 q と中身を返す
+inline bool num_radical(const E& f, long long& q, Rat& inside) {
+  if (f->k != Kind::Pow || !is_num(f->kids[0]) || !is_num(f->kids[1])) return false;
+  if (f->kids[1]->num.n != 1 || f->kids[1]->num.d <= 1) return false;
+  q = f->kids[1]->num.d;
+  inside = f->kids[0]->num;
+  return true;
+}
+
 // 因子を「底 ^ 指数」に割る（同じ底をまとめるため）
 inline void split_pow(const E& f, E& base, E& expo) {
   if (f->k == Kind::Pow) { base = f->kids[0]; expo = f->kids[1]; }
@@ -216,6 +235,33 @@ inline E mul_n(std::vector<E> xs) {
     if (is_num(e) && e->num.is_one()) { out.push_back(pr.first); continue; }
     out.push_back(raw(Kind::Pow, {pr.first, e}));
   }
+  // **同じ次数の根はまとめる**（sqrt(2)*sqrt(3) = sqrt(6)）。教科書はそう書くし、
+  // まとめないと sqrt(3)/sqrt(2) が有理化されない（1/sqrt(2) は sqrt(2)/2 になるのに、
+  // 根どうしの割り算だけ残ってしまう）。
+  {
+    std::vector<std::pair<long long, Rat>> rads;     // 次数 q -> 中身の積（現れた順）
+    std::vector<E> keep;
+    bool merged = false;
+    for (const E& f : out) {
+      long long q = 0;
+      Rat in;
+      if (num_radical(f, q, in)) {
+        bool hit = false;
+        for (auto& pr : rads)
+          if (pr.first == q) { pr.second = pr.second * in; hit = merged = true; break; }
+        if (!hit) rads.emplace_back(q, in);
+        continue;
+      }
+      keep.push_back(f);
+    }
+    if (merged) {
+      std::vector<E> xs;
+      if (!coef.is_one()) xs.push_back(num(coef));
+      for (const E& f : keep) xs.push_back(f);
+      for (const auto& pr : rads) xs.push_back(pow_e(num(pr.second), num(Rat(1, pr.first))));
+      return mul_n(xs);
+    }
+  }
   if (out.empty()) return num(coef);
   if (!coef.is_one()) out.insert(out.begin(), num(coef));
   if (out.size() == 1) return out[0];
@@ -232,50 +278,43 @@ inline E pow_e(const E& b_in, const E& e_in) {
       const long long e = p->num.n;
       if (e > -32 && e < 32 && !(b->num.is_zero() && e < 0)) return num(rpow(b->num, e));
     }
-    // 分数指数のとき、まず**根号の中の完全冪を外に出す**: sqrt(8) は 2*sqrt(2) にする。
-    // これをやらないと x^2 = 2 の答えが 1/2*sqrt(8) と出て、厳密に計算している意味が薄れる。
-    if (is_num(b) && !p->num.is_int() && !b->num.neg() && p->num.n > 0) {
-      const long long q = p->num.d;
-      if (q > 1 && q <= 8) {
-        auto pull = [q](long long v, long long& outside, long long& inside) {
-          outside = 1; inside = v;
-          for (long long f = 2; f * f <= inside && f < 4096; ++f) {
-            long long pw = 1;
-            for (long long i = 0; i < q; ++i) pw *= f;      // f^q
-            if (pw <= 1) break;
-            while (inside % pw == 0) { inside /= pw; outside *= f; }
+    // **数の根は「有理化して、中身から完全冪を外に出す」形に正規化する**:
+    //   sqrt(8) -> 2 sqrt(2)   sqrt(4) -> 2      sqrt(9/4) -> 3/2
+    //   sqrt(1/2) -> sqrt(2)/2   2^(-1/2) -> sqrt(2)/2   sqrt(2/3) -> sqrt(6)/3
+    // 教科書の答えは**分母に根号を残さない**ので、正規形の側で一度に片づける
+    // （表示のときに直すやり方だと、同じ数が別の木のまま残って差が 0 にならない）。
+    //
+    // やり方: 指数 p/q を「整数部 k」と「0 < p'/q < 1」に分け、
+    //   a^(p'/q) = (n/d)^(p'/q) = (n^p' * d^(q-p'))^(1/q) / d
+    // と書き直す（分母が根の外に出る）。あとは中身から q 乗の因数を外に出すだけ。
+    if (is_num(b) && !p->num.is_int() && !b->num.neg()) {
+      if (b->num.is_zero()) { if (p->num.n > 0) return num(Rat(0)); }
+      else {
+        const long long q = p->num.d;
+        if (q > 1 && q <= 8) {
+          const long long pp = p->num.n;
+          const long long k = pp >= 0 ? pp / q : -((-pp + q - 1) / q);   // 負のときは下へ切る
+          const long long pf = pp - k * q;                               // 0 < pf < q
+          long long M = 1;
+          bool ok = true;
+          for (long long i = 0; i < pf && ok; ++i) ok = mul_safe(M, b->num.n, M);
+          for (long long i = 0; i < q - pf && ok; ++i) ok = mul_safe(M, b->num.d, M);
+          if (ok) {
+            long long s = 1, m = M;                        // M = s^q * m（m は q 乗の因数を持たない）
+            for (long long f = 2; f * f <= m && f < 4096; ++f) {
+              long long pw = 1;
+              bool ovf = false;
+              for (long long i = 0; i < q; ++i) { pw *= f; if (pw > m) { ovf = true; break; } }
+              if (ovf) break;                              // これより大きい f では q 乗が中身を超える
+              while (m % pw == 0) { m /= pw; s *= f; }
+            }
+            const Rat coef = rpow(b->num, k) * Rat(s, b->num.d);
+            if (m == 1) return num(coef);
+            const E rest = raw(Kind::Pow, {num(Rat(m)), num(Rat(1, q))});
+            if (coef.is_one()) return rest;
+            return mul_n({num(coef), rest});
           }
-        };
-        long long on = 1, in_n = b->num.n, od = 1, in_d = b->num.d;
-        pull(b->num.n, on, in_n);
-        pull(b->num.d, od, in_d);
-        if (on != 1 || od != 1) {
-          const Rat coef = rpow(Rat(on, od), p->num.n);       // 外に出た分（指数の分子は乗る）
-          const E rest = raw(Kind::Pow, {num(Rat(in_n, in_d)), p});
-          if (in_n == 1 && in_d == 1) return num(coef);
-          return mul_n({num(coef), rest});
         }
-      }
-    }
-    // 厳密に閉じるなら畳む: sqrt(4) は 2 であって 4^(1/2) のまま残す理由がない。
-    // 閉じないもの（sqrt(2)）は Pow のまま置く。整数根が取れるかを実際に試して確かめる。
-    if (is_num(b) && !p->num.is_int() && b->num.d != 0) {
-      const long long root = p->num.d, up = p->num.n;
-      if (root > 1 && root <= 8 && up > -32 && up < 32 && !b->num.neg()) {
-        auto iroot = [](long long v, long long k, long long& out) {
-          if (v < 0) return false;
-          long long r = (long long)std::llround(std::pow((double)v, 1.0 / (double)k));
-          for (long long c = r > 2 ? r - 2 : 0; c <= r + 2; ++c) {
-            long long q = 1;
-            bool ovf = false;
-            for (long long i = 0; i < k; ++i) { q *= c; if (q > (1LL << 40)) { ovf = true; break; } }
-            if (!ovf && q == v) { out = c; return true; }
-          }
-          return false;
-        };
-        long long rn = 0, rd = 0;
-        if (iroot(b->num.n, root, rn) && iroot(b->num.d, root, rd))
-          return num(rpow(Rat(rn, rd), up));
       }
     }
   }
