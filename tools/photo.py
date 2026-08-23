@@ -134,7 +134,13 @@ def detect_syms(sess, img, imgsz=640, conf=0.25, nms=0.45):
         if sx1 <= sx0 or sy1 <= sy0:
             continue
         name = CLASSES[c] if 0 <= c < len(CLASSES) else "?"
-        syms.append(PL.Sym(name, sx0, sy0, sx1, sy1, sy1))
+        # **下に突き出る字はベースラインが箱の下端より上**（y g p q）。下端をそのまま使うと、
+        # 次の字が持ち上がって見えて上付きに読まれる（実測: `x^2y` が `y^(x^2)` になった）。
+        # 組版で測った descender は箱の高さの約 32%（C++ の pipeline.hpp と同じ値）。
+        base = sy1
+        if name in ("y", "g", "p", "q"):
+            base = sy1 - round(0.32 * (sy1 - sy0))
+        syms.append(PL.Sym(name, sx0, sy0, sx1, sy1, base))
     syms.sort(key=lambda s: s.x0)
     return syms
 

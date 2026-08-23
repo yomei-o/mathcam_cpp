@@ -93,6 +93,11 @@ inline Detected detect_syms(const onx::Graph& g, const unsigned char* rgb, int w
     sm.x1 = (int)((d.x2 - padx) / sc);
     sm.y1 = (int)((d.y2 - pady) / sc);
     sm.base_y = sm.y1;
+    // **下に突き出る字はベースラインが箱の下端より上**（y g p q）。下端をそのまま使うと、
+    // 次の字が持ち上がって見えて上付きに読まれる（実測: `x^2y` が `y^(x^2)` になった）。
+    // 組版で測った descender は箱の高さの約 32%（56px で n の高さ 26 に対して 12 下がる）。
+    if (sm.cls == "y" || sm.cls == "g" || sm.cls == "p" || sm.cls == "q")
+      sm.base_y = sm.y1 - (int)std::lround(0.32 * (sm.y1 - sm.y0));
     sm.score = d.score;
     if (sm.x1 <= sm.x0 || sm.y1 <= sm.y0) continue;
     out.syms.push_back(sm);

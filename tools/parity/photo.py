@@ -72,8 +72,11 @@ def main():
     tmp = os.path.join(tempfile.gettempdir(), "mathcam_photo_parity.png")
     bad = box_bad = 0
     n = 0
-    for _ in range(a.n):
-        src = G.one(rng)
+    # **下に突き出る字（y g p q）を必ず通す**。ベースラインの見積もりが両言語でずれると
+    # ここでしか出ない（乱数の式だけでは y の次に字が来る形がなかなか出ない）
+    FIXED = ["x^2*y", "6*x^2*y + 9*x*y^2", "3*p + q", "y^2 - 9", "x*y + 1", "g + p*q"]
+    for _i in range(a.n + len(FIXED)):
+        src = FIXED[_i] if _i < len(FIXED) else G.one(rng)
         e, err = X.parse(src)
         if err:
             continue
