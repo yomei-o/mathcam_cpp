@@ -1709,6 +1709,8 @@ int main(int argc, char** argv) {
     return 1;
   }
   const std::string cmd = argv[1];
+  // **分数線だけのしきい値**（どのコマンドからでも効くように、ここで 1 回だけ設定する）
+  pipeln::frac_conf() = (float)atof(arg_of(argc, argv, "--conf-frac", "0.08").c_str());
   if (cmd == "eval") return cmd_eval(argc, argv);
   if (cmd == "rawdump") return cmd_rawdump(argc, argv);
   if (cmd == "solve") return cmd_solve(argc, argv);

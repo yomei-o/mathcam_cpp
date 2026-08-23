@@ -65,7 +65,12 @@ inline std::string to_text(const ex::E& e, bool dec_ok = false, int parent = 0) 
                       : n == "op_div" ? " \xc3\xb7 "     // ÷
                                       : "^";
     // 左結合なので、右側は同じ優先順位でも括弧が要る（8 - (3 - 1) は 8 - 3 - 1 ではない）
-    s = to_text(e->kids[0], dec_ok, p) + sym + to_text(e->kids[1], dec_ok, p + 1);
+    std::string rhs = to_text(e->kids[1], dec_ok, p + 1);
+    // **`÷` の右の分数は括弧が要る**。`6 ÷ 4/9` は読み直すと (6÷4)/9 になってしまう
+    // （`×` の右なら (6×4)/9 = 6×(4/9) で同じなので要らない）
+    if (n == "op_div" && is_num(e->kids[1]) && !e->kids[1]->num.is_int() && !dec_ok)
+      rhs = "(" + rhs + ")";
+    s = to_text(e->kids[0], dec_ok, p) + sym + rhs;
   }
   return p < parent ? "(" + s + ")" : s;
 }

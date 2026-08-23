@@ -18,8 +18,11 @@
 enum class BoxFmt { XYXY, CXCYWH };
 
 // raw: [1, 4+nc, N]. Returns detections in input-image pixel space (before un-letterboxing).
+// cls_thr: クラスごとのしきい値（空なら conf_thr を全部に使う）。分数線のように
+// **細くて確からしさが上がりにくい字**だけ下げるために要る。
 inline std::vector<Det> v8_detect(const Tensor& raw, int64_t nc, float conf_thr = 0.25f,
-                                 float nms_thr = 0.45f, BoxFmt fmt = BoxFmt::XYXY) {
+                                 float nms_thr = 0.45f, BoxFmt fmt = BoxFmt::XYXY,
+                                 const std::vector<float>* cls_thr = nullptr) {
   const int64_t C = raw->shape[1], N = raw->shape[2];
   if (C != 4 + nc) {
     printf("v8_detect: head has %lld channels but nc=%lld implies %lld\n", (long long)C,
@@ -35,7 +38,9 @@ inline std::vector<Det> v8_detect(const Tensor& raw, int64_t nc, float conf_thr 
       const float p = d[(4 + c) * N + i];
       if (p > bestp) { bestp = p; best = (int)c; }
     }
-    if (bestp < conf_thr) continue;
+    const float thr = (cls_thr && best < (int)cls_thr->size()) ? (*cls_thr)[(size_t)best]
+                                                               : conf_thr;
+    if (bestp < thr) continue;
     float a = d[0 * N + i], b = d[1 * N + i], e = d[2 * N + i], f = d[3 * N + i];
     Det det{};
     if (fmt == BoxFmt::XYXY) { det.x1 = a; det.y1 = b; det.x2 = e; det.y2 = f; }

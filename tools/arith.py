@@ -60,7 +60,12 @@ def to_text(e, dec_ok=False, parent=0):
         sym = {"op_add": " + ", "op_sub": " - ", "op_mul": " × ",
                "op_div": " ÷ "}.get(n, "^")
         # 左結合なので、右側は同じ優先順位でも括弧が要る（8 - (3 - 1) は 8 - 3 - 1 ではない）
-        s = to_text(e.kids[0], dec_ok, p) + sym + to_text(e.kids[1], dec_ok, p + 1)
+        rhs = to_text(e.kids[1], dec_ok, p + 1)
+        # **`÷` の右の分数は括弧が要る**。`6 ÷ 4/9` は読み直すと (6÷4)/9 になってしまう
+        # （`×` の右なら (6×4)/9 = 6×(4/9) で同じなので要らない）
+        if n == "op_div" and X.is_num(e.kids[1]) and not e.kids[1].num.is_int() and not dec_ok:
+            rhs = "(" + rhs + ")"
+        s = to_text(e.kids[0], dec_ok, p) + sym + rhs
     return "(" + s + ")" if p < parent else s
 
 

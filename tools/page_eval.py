@@ -25,8 +25,9 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 
-def run_cells(exe, img, model, conf, crop="", gap=35, merge=25):
-    cmd = [exe, "photo", "--img", img, "--model", model, "--conf", str(conf), "--auto-cells",
+def run_cells(exe, img, model, conf, crop="", gap=35, merge=25, frac_conf=0.08):
+    cmd = [exe, "photo", "--img", img, "--model", model, "--conf", str(conf),
+           "--conf-frac", str(frac_conf), "--auto-cells",
            "--cell-gap", str(gap), "--band-merge", str(merge)]
     if crop:
         cmd += ["--crop", crop]
@@ -46,6 +47,7 @@ def main():
     ap.add_argument("--key", default=os.path.join(ROOT, "tests", "real_photos.txt"))
     ap.add_argument("--model", default="models/sym_det_v5.onnx")
     ap.add_argument("--conf", type=float, default=0.20)
+    ap.add_argument("--conf-frac", dest="conf_frac", type=float, default=0.08)
     ap.add_argument("--exe", default="")
     ap.add_argument("--only", default="", help="1 枚だけ測る")
     ap.add_argument("--crop", default="", help="その 1 枚の中の範囲（x0,y0,x1,y1）")
@@ -80,7 +82,8 @@ def main():
         if not os.path.exists(path):
             print("[SKIP] %s が無い" % path)
             continue
-        got, raw = run_cells(exe, path, a.model, a.conf, a.crop, a.cell_gap, a.band_merge)
+        got, raw = run_cells(exe, path, a.model, a.conf, a.crop, a.cell_gap, a.band_merge,
+                             frac_conf=a.conf_frac)
         hit = []
         for w in wants:
             found = any(same(g, w) for g in got)

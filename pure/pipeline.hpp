@@ -17,6 +17,14 @@
 // グローバルにあるので "pipe does not name a type" になる。MSVC では通るので気付かない）
 namespace pipeln {
 
+// 分数線だけのしきい値。既定は「全体と同じ」にしておき、実験で下げられるようにする
+// （`mathcam photo --conf-frac 0.08`）。0 を渡すと全体と同じ。
+inline float& frac_conf() {
+  static float v = 0.08f;
+  return v;
+}
+
+
 // 画像 1 枚 -> 記号（検出 -> 元座標に戻す -> クラスを無視した重複除去まで）。
 // photo と e2e で同じ道を通すために関数にしてある（別の道でテストすると、その差分だけ
 // 検証が消える）。
@@ -63,7 +71,14 @@ inline Detected detect_syms(const onx::Graph& g, const unsigned char* rgb, int w
   std::map<std::string, Tensor> vals = onx::run_onnx(g, x, {}, nullptr, false);
   const Tensor& raw = vals.at(g.outputs[0].name);
   const int64_t nc = raw->shape[1] - 4;
-  std::vector<Det> dets = v8_detect(raw, nc, conf, nms, fmt);
+  // **分数線だけしきい値を下げる**（2 画素の横棒は確からしさが上がりにくい。実測: 50px の
+  // 63/20 で棒が落ちて `64 × 0` に化けた）。全体を下げるのは前に測って駄目だった。
+  std::vector<float> cls_thr((size_t)nc, conf);
+  {
+    const int fi = cls::id_of("frac");
+    if (fi >= 0 && fi < (int)cls_thr.size()) cls_thr[(size_t)fi] = std::min(conf, frac_conf());
+  }
+  std::vector<Det> dets = v8_detect(raw, nc, conf, nms, fmt, &cls_thr);
   std::sort(dets.begin(), dets.end(), [](const Det& a, const Det& b) { return a.score > b.score; });
   std::vector<Det> keep;
   for (const Det& d : dets) {

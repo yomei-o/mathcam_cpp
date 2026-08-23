@@ -37,9 +37,12 @@ def read_key(path):
     return rows
 
 
+FRAC_CONF = [0.08]                                   # 分数線だけのしきい値（--conf-frac）
+
+
 def run_cli(exe, img, crop, model, conf):
     p = subprocess.run([exe, "photo", "--img", img, "--crop", crop, "--model", model,
-                        "--conf", str(conf), "--show-syms"],
+                        "--conf", str(conf), "--conf-frac", str(FRAC_CONF[0]), "--show-syms"],
                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                        encoding="utf-8", errors="replace")
     read, syms = "", []
@@ -73,9 +76,11 @@ def main():
     ap.add_argument("--key", default=os.path.join(ROOT, "tests", "real_photos.txt"))
     ap.add_argument("--model", default="models/sym_det_v5.onnx")
     ap.add_argument("--conf", type=float, default=0.20)
+    ap.add_argument("--conf-frac", dest="conf_frac", type=float, default=0.08)
     ap.add_argument("--exe", default="")
     ap.add_argument("--show", action="store_true", help="外したものの記号列も出す")
     a = ap.parse_args()
+    FRAC_CONF[0] = a.conf_frac
 
     exe = a.exe
     if not exe:
