@@ -29,6 +29,9 @@ struct Result {
   std::vector<ex::E> vals;            // その点での f の値
   bool has_at = false;
   ex::E at, tangent, normal;          // 接線・法線（--at のとき）
+  bool is_quad = false;               // 2 次関数か（平方完成して頂点を出す）
+  ex::E vertex_x, vertex_y, completed;  // 頂点と a(x - p)^2 + q の形
+  bool opens_up = true;               // 下に凸か
   std::vector<Step> steps;
 };
 
@@ -66,6 +69,27 @@ inline Result curve(const ex::E& f, const std::string& want_var, const ex::E& at
     // 法線（接線に垂直。傾きが 0 のときは x = a の縦線になるので出さない）
     if (!(is_num(ma) && ma->num.is_zero()))
       r.normal = expand(add_n({mul_n({neg(pow_e(ma, num(Rat(-1)))), add_n({x, neg(at)})}), fa}));
+  }
+
+  // 2 次関数なら**平方完成**して頂点と軸を出す（数学 I の言い方）
+  {
+    std::vector<Rat> c;
+    if (slv::poly_coeffs(expand(f), var, c)) {
+      while (c.size() > 1 && c.back().is_zero()) c.pop_back();
+      if (c.size() == 3 && !c[2].is_zero()) {
+        const Rat a2 = c[2], b2 = c[1], c2 = c[0];
+        const Rat p = -b2 / (Rat(2) * a2);
+        const Rat q = c2 - b2 * b2 / (Rat(4) * a2);
+        const E body = pow_e(add_n({x, num(-p)}), num(Rat(2)));
+        r.completed = add_n({a2.is_one() ? body : mul_n({num(a2), body}), num(q)});
+        r.vertex_x = num(p);
+        r.vertex_y = num(q);
+        r.is_quad = true;
+        r.opens_up = !a2.neg();
+        push(r.steps, "平方完成",
+             "a(" + var + " - p)^2 + q の形にすると頂点が読める", f, r.completed);
+      }
+    }
   }
 
   // 極値: f'(x) = 0 を解いて、f'' の符号で見分ける
@@ -112,6 +136,13 @@ inline std::vector<std::string> answer_lines(const Result& r, bool latex = false
   if (!r.ok) { out.push_back(r.why); return out; }
   const auto show = [&](const E& e) { return latex ? to_latex(e) : to_infix(e); };
   out.push_back("f'(" + r.var + ") = " + show(r.d1));
+  if (r.is_quad) {
+    out.push_back("平方完成: " + show(r.completed));
+    out.push_back("頂点: (" + show(r.vertex_x) + ", " + show(r.vertex_y) + ")、軸: " + r.var +
+                  " = " + show(r.vertex_x));
+    out.push_back(std::string(r.opens_up ? "最小値 " : "最大値 ") + show(r.vertex_y) + "（" +
+                  r.var + " = " + show(r.vertex_x) + " のとき）");
+  }
   if (r.has_at) {
     out.push_back("接線: y = " + show(r.tangent));
     if (r.normal) out.push_back("法線: y = " + show(r.normal));

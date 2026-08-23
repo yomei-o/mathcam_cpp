@@ -33,6 +33,11 @@ class Result:
         self.at = None
         self.tangent = None
         self.normal = None
+        self.is_quad = False          # 2 次関数か（平方完成して頂点を出す）
+        self.vertex_x = None
+        self.vertex_y = None
+        self.completed = None
+        self.opens_up = True
         self.steps = []
 
 
@@ -72,6 +77,24 @@ def curve(f, want_var="", at=None):
         if not (X.is_num(ma) and ma.num.is_zero()):
             r.normal = X.expand(X.add_n([
                 X.mul_n([X.neg(X.pow_e(ma, X.num(-1))), X.add_n([x, X.neg(at)])]), fa]))
+
+    # 2 次関数なら**平方完成**して頂点と軸を出す（数学 I の言い方）
+    cc = []
+    if S.poly_coeffs(X.expand(f), var, cc):
+        while len(cc) > 1 and cc[-1].is_zero():
+            cc.pop()
+        if len(cc) == 3 and not cc[2].is_zero():
+            a2, b2, c2 = cc[2], cc[1], cc[0]
+            p = -b2 / (X.Rat(2) * a2)
+            q = c2 - b2 * b2 / (X.Rat(4) * a2)
+            body = X.pow_e(X.add_n([x, X.num(-p)]), X.num(2))
+            r.completed = X.add_n([body if a2.is_one() else X.mul_n([X.num(a2), body]),
+                                   X.num(q)])
+            r.vertex_x, r.vertex_y = X.num(p), X.num(q)
+            r.is_quad = True
+            r.opens_up = not a2.neg()
+            r.steps.append(Step("平方完成", "a(%s - p)^2 + q の形にすると頂点が読める" % var,
+                                f, r.completed))
 
     # 極値: f'(x) = 0 を解いて、f'' の符号で見分ける
     s = S.solve(X.eq(r.d1, X.num(0)), var)
@@ -116,6 +139,13 @@ def answer_lines(r, latex=False):
         return [r.why]
     show = X.to_latex if latex else X.to_infix
     out = ["f'(%s) = %s" % (r.var, show(r.d1))]
+    if r.is_quad:
+        out.append("平方完成: %s" % show(r.completed))
+        out.append("頂点: (%s, %s)、軸: %s = %s"
+                   % (show(r.vertex_x), show(r.vertex_y), r.var, show(r.vertex_x)))
+        out.append("%s%s（%s = %s のとき）"
+                   % ("最小値 " if r.opens_up else "最大値 ", show(r.vertex_y),
+                      r.var, show(r.vertex_x)))
     if r.has_at:
         out.append("接線: y = %s" % show(r.tangent))
         if r.normal is not None:

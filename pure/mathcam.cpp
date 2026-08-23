@@ -22,6 +22,7 @@
 #include "seq.hpp"
 #include "factor.hpp"
 #include "curve.hpp"
+#include "limit.hpp"
 #include "typeset_impl.hpp"
 #include "gen_expr.hpp"
 #include "parse_layout.hpp"
@@ -408,6 +409,38 @@ static int cmd_curve(int argc, char** argv) {
       printf("%zu. [%s] %s\n   %s\n", i + 1, r.steps[i].rule.c_str(), r.steps[i].note.c_str(),
              (latex ? ex::to_latex(r.steps[i].after) : ex::to_infix(r.steps[i].after)).c_str());
   for (const std::string& line : crv::answer_lines(r, latex)) printf("%s\n", line.c_str());
+  return r.ok ? 0 : 1;
+}
+
+// mathcam limit — 極限。--to に inf / -inf も書ける
+static int cmd_limit(int argc, char** argv) {
+  const std::string src = arg_of(argc, argv, "--expr", "");
+  const std::string var = arg_of(argc, argv, "--var", "");
+  const std::string to = arg_of(argc, argv, "--to", "");
+  const bool steps = has_flag(argc, argv, "--steps");
+  const bool latex = has_flag(argc, argv, "--latex");
+  if (src.empty() || to.empty()) {
+    printf("usage: mathcam limit --expr \"(x^2 - 1)/(x - 1)\" --to 1 [--var x] [--steps]\n"
+           "       --to inf / --to -inf で x -> ±無限大\n");
+    return 1;
+  }
+  std::string why;
+  const ex::E e = ex::parse(src, &why);
+  if (!why.empty()) { printf("parse error: %s\n", why.c_str()); return 1; }
+  int at_inf = 0;
+  ex::E a;
+  if (to == "inf" || to == "+inf") at_inf = 1;
+  else if (to == "-inf") at_inf = -1;
+  else {
+    a = ex::parse(to, &why);
+    if (!why.empty()) { printf("parse error(--to): %s\n", why.c_str()); return 1; }
+  }
+  const lim::Result r = lim::limit(e, var, a, at_inf);
+  if (steps)
+    for (size_t i = 0; i < r.steps.size(); ++i)
+      printf("%zu. [%s] %s\n   %s\n", i + 1, r.steps[i].rule.c_str(), r.steps[i].note.c_str(),
+             (latex ? ex::to_latex(r.steps[i].after) : ex::to_infix(r.steps[i].after)).c_str());
+  for (const std::string& line : lim::answer_lines(r, latex)) printf("%s\n", line.c_str());
   return r.ok ? 0 : 1;
 }
 
@@ -1119,7 +1152,7 @@ int main(int argc, char** argv) {
   }
 #endif
   if (argc < 2) {
-    printf("usage: mathcam <eval|solve|diff|integ|sum|seq|factor|curve|render|dataset|parse|selftest|photo> ...\n");
+    printf("usage: mathcam <eval|solve|diff|integ|sum|seq|factor|curve|limit|render|dataset|parse|selftest|photo> ...\n");
     return 1;
   }
   const std::string cmd = argv[1];
@@ -1132,6 +1165,7 @@ int main(int argc, char** argv) {
   if (cmd == "seq") return cmd_seq(argc, argv);
   if (cmd == "factor") return cmd_factor(argc, argv);
   if (cmd == "curve") return cmd_curve(argc, argv);
+  if (cmd == "limit") return cmd_limit(argc, argv);
   if (cmd == "render") return cmd_render(argc, argv);
   if (cmd == "dataset") return cmd_dataset(argc, argv);
   if (cmd == "genexpr") return cmd_genexpr(argc, argv);
