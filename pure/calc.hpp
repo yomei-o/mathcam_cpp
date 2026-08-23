@@ -12,6 +12,7 @@
 // 初等関数で表せないものは、そう言う。
 #pragma once
 #include "expr.hpp"
+#include "solve.hpp"
 #include <string>
 #include <vector>
 
@@ -218,6 +219,98 @@ inline bool linear_in(const ex::E& e, const std::string& var, ex::Rat& a, ex::Ra
   return true;
 }
 
+// ---------------------------------------------------------------- 部分分数分解
+//
+// N(x)/D(x) を A1/(x - r1) + A2/(x - r2) + ... に分ける。**分母が相異なる 1 次因数の積の
+// ときだけ**（重解や 2 次の因数は教科書でも別の型として教えるので、ここでは扱わない）。
+// 係数は Heaviside の「隠す」やり方: Ai = N(ri) / D'(ri)。
+//
+// これがあると 1/(x^2 - 1) のような有理関数が積分できる（log の和になる）。
+
+struct Apart {
+  bool ok = false;
+  std::string why;
+  ex::E poly;                                        // 帯分数のように出てくる多項式の部分
+  std::vector<std::pair<ex::Rat, ex::Rat>> parts;    // (Ai, ri) で Ai/(x - ri)
+};
+
+// 多項式の割り算（低次から並んだ係数。商と余りを返す）
+inline void poly_divmod(const std::vector<ex::Rat>& a, const std::vector<ex::Rat>& b,
+                        std::vector<ex::Rat>& q, std::vector<ex::Rat>& r) {
+  using namespace ex;
+  r = a;
+  const size_t db = b.size() - 1;
+  q.assign(a.size() > db ? a.size() - db : 1, Rat(0));
+  while (r.size() > db && r.size() >= b.size()) {
+    const size_t d = r.size() - 1;
+    const Rat c = r[d] / b[db];
+    q[d - db] = c;
+    for (size_t i = 0; i <= db; ++i) r[d - db + i] = r[d - db + i] - c * b[i];
+    while (r.size() > 1 && r.back().is_zero()) r.pop_back();
+    if (r.size() == 1 && r[0].is_zero()) break;
+  }
+}
+
+inline Apart apart(const ex::E& e, const std::string& var) {
+  using namespace ex;
+  Apart a;
+  std::vector<E> up, down;
+  split_num_den(e, up, down);
+  if (down.empty()) { a.why = "分数の形ではありません"; return a; }
+  const E nume = up.empty() ? num(Rat(1)) : (up.size() == 1 ? up[0] : mul_n(up));
+  const E dene = down.size() == 1 ? down[0] : mul_n(down);
+  std::vector<Rat> cn, cd;
+  if (!slv::poly_coeffs(expand(nume), var, cn) || !slv::poly_coeffs(expand(dene), var, cd)) {
+    a.why = "分子と分母が多項式ではありません";
+    return a;
+  }
+  while (cn.size() > 1 && cn.back().is_zero()) cn.pop_back();
+  while (cd.size() > 1 && cd.back().is_zero()) cd.pop_back();
+  if (cd.size() < 2) { a.why = "分母が定数です"; return a; }
+
+  std::vector<Rat> q, rem;                           // 仮分数なら先に割る
+  if (cn.size() >= cd.size()) {
+    poly_divmod(cn, cd, q, rem);
+    cn = rem;
+  } else {
+    q.assign(1, Rat(0));
+  }
+  a.poly = slv::from_coeffs(q, var);
+
+  std::vector<Rat> roots, rest;
+  if (!slv::rational_roots(cd, roots, rest) || roots.size() + 1 != cd.size()) {
+    a.why = "分母が相異なる 1 次因数の積になりません";
+    return a;
+  }
+  for (size_t i = 0; i < roots.size(); ++i)
+    for (size_t j = i + 1; j < roots.size(); ++j)
+      if (roots[i] == roots[j]) { a.why = "分母に重解があります（この型は未対応）"; return a; }
+
+  std::vector<Rat> dd;                               // D'(x)
+  for (size_t i = 1; i < cd.size(); ++i) dd.push_back(cd[i] * Rat((long long)i));
+  const auto at = [](const std::vector<Rat>& c, const Rat& x) {
+    Rat v(0), pw(1);
+    for (size_t i = 0; i < c.size(); ++i) { v = v + c[i] * pw; pw = pw * x; }
+    return v;
+  };
+  for (const Rat& ri : roots) {
+    const Rat dv = at(dd, ri);
+    if (dv.is_zero()) { a.why = "分母の微分が 0 になりました"; return a; }
+    a.parts.push_back({at(cn, ri) / dv, ri});
+  }
+  a.ok = true;
+  return a;
+}
+
+inline ex::E apart_expr(const Apart& a, const std::string& var) {
+  using namespace ex;
+  std::vector<E> ts;
+  if (!(is_num(a.poly) && a.poly->num.is_zero())) ts.push_back(a.poly);
+  for (const std::pair<Rat, Rat>& pr : a.parts)
+    ts.push_back(mul_n({num(pr.first), pow_e(add_n({sym(var), num(-pr.second)}), num(Rat(-1)))}));
+  return ts.empty() ? num(Rat(0)) : add_n(ts);
+}
+
 // var の多項式か（部分積分で「微分するほう」に回せる形か）
 inline bool is_poly_in(const ex::E& e, const std::string& var) {
   using namespace ex;
@@ -315,7 +408,14 @@ inline bool integ_term(const ex::E& t, const std::string& var, ex::E& out, std::
     if (!(c == Rat(1)) && !rest.empty()) {
       E sub;
       if (!integ_term(rest.size() == 1 ? rest[0] : mul_n(rest), var, sub, rule)) return false;
-      out = mul_n({num(c), sub});
+      // 中身が和なら係数を配る（2*(-ln(..)/2 + ln(..)/2) のままだと読みにくい）
+      if (sub->k == Kind::Add) {
+        std::vector<E> ts;
+        for (const E& k : sub->kids) ts.push_back(mul_n({num(c), k}));
+        out = add_n(ts);
+      } else {
+        out = mul_n({num(c), sub});
+      }
       return true;
     }
   }
@@ -351,18 +451,22 @@ inline bool integ_term(const ex::E& t, const std::string& var, ex::E& out, std::
         }
       }
     }
-    if (!is_num(p) || has_var(p, var)) return false;
-    Rat a(0), c(0);
-    if (!linear_in(b, var, a, c) || a.is_zero()) return false;   // 中身は 1 次だけ
-    if (p->num == Rat(-1)) {                            // 1/(ax+b) -> ln|ax+b| / a
-      out = mul_n({num(Rat(1) / a), fn_e("ln", {fn_e("abs", {b})})});
-      rule = c.is_zero() ? "1/x の積分" : "1 次の中身の 1/(ax+b)";
-      return true;
+    // **中身が 1 次のときだけここで片づく**。そうでなければ下の有理関数の道に落とす
+    // （1/(x^2 - 1) は部分分数に分ければ積分できる）
+    if (is_num(p) && !has_var(p, var)) {
+      Rat a(0), c(0);
+      if (linear_in(b, var, a, c) && !a.is_zero()) {
+        if (p->num == Rat(-1)) {                        // 1/(ax+b) -> ln|ax+b| / a
+          out = mul_n({num(Rat(1) / a), fn_e("ln", {fn_e("abs", {b})})});
+          rule = c.is_zero() ? "1/x の積分" : "1 次の中身の 1/(ax+b)";
+          return true;
+        }
+        const Rat np = p->num + Rat(1);
+        out = mul_n({num(Rat(1) / (a * np)), pow_e(b, num(np))});
+        rule = (b->k == Kind::Sym) ? "x の n 乗の積分" : "1 次の中身の n 乗";
+        return true;
+      }
     }
-    const Rat np = p->num + Rat(1);
-    out = mul_n({num(Rat(1) / (a * np)), pow_e(b, num(np))});
-    rule = (b->k == Kind::Sym) ? "x の n 乗の積分" : "1 次の中身の n 乗";
-    return true;
   }
   if (t->k == Kind::Fn && t->kids.size() == 1) {
     const E& f = t->kids[0];
@@ -387,6 +491,24 @@ inline bool integ_term(const ex::E& t, const std::string& var, ex::E& out, std::
     return false;
   }
   if (by_parts(t, var, out, rule)) return true;
+  // 有理関数は**部分分数に分けてから**積分する（log の和になる）
+  {
+    const Apart ap = apart(t, var);
+    if (ap.ok && !ap.parts.empty()) {
+      std::vector<E> ts;
+      if (!(is_num(ap.poly) && ap.poly->num.is_zero())) {
+        E pi;
+        if (!integ_any(ap.poly, var, pi)) return false;
+        ts.push_back(pi);
+      }
+      for (const std::pair<Rat, Rat>& pr : ap.parts)
+        ts.push_back(mul_n({num(pr.first),
+                            fn_e("ln", {fn_e("abs", {add_n({sym(var), num(-pr.second)})})})}));
+      out = add_n(ts);
+      rule = "部分分数分解";
+      return true;
+    }
+  }
   return false;
 }
 

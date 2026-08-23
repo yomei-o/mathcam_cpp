@@ -13,6 +13,7 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "tools"))
 import expr as X      # noqa: E402
+import solve as S     # noqa: E402  （部分分数分解で poly_coeffs / rational_roots を使う）
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -177,6 +178,103 @@ def linear_in(e, var):
     return (a, b)
 
 
+# ---------------------------------------------------------------- 部分分数分解
+#
+# N(x)/D(x) を A1/(x - r1) + A2/(x - r2) + ... に分ける。**分母が相異なる 1 次因数の積の
+# ときだけ**（重解や 2 次の因数は教科書でも別の型として教える）。
+# 係数は Heaviside の「隠す」やり方: Ai = N(ri) / D'(ri)。
+
+
+class Apart:
+    def __init__(self):
+        self.ok = False
+        self.why = ""
+        self.poly = None
+        self.parts = []                              # (Ai, ri) で Ai/(x - ri)
+
+
+def poly_divmod(a, b):
+    """多項式の割り算（低次から並んだ係数。商と余りを返す）。"""
+    r = list(a)
+    db = len(b) - 1
+    q = [X.Rat(0)] * (len(a) - db if len(a) > db else 1)
+    while len(r) > db and len(r) >= len(b):
+        d = len(r) - 1
+        c = r[d] / b[db]
+        q[d - db] = c
+        for i in range(db + 1):
+            r[d - db + i] = r[d - db + i] - c * b[i]
+        while len(r) > 1 and r[-1].is_zero():
+            r.pop()
+        if len(r) == 1 and r[0].is_zero():
+            break
+    return q, r
+
+
+def apart(e, var):
+    a = Apart()
+    up, down = X.split_num_den(e)
+    if not down:
+        a.why = "分数の形ではありません"
+        return a
+    nume = X.num(1) if not up else (up[0] if len(up) == 1 else X.mul_n(up))
+    dene = down[0] if len(down) == 1 else X.mul_n(down)
+    cn, cd = [], []
+    if not S.poly_coeffs(X.expand(nume), var, cn) or not S.poly_coeffs(X.expand(dene), var, cd):
+        a.why = "分子と分母が多項式ではありません"
+        return a
+    while len(cn) > 1 and cn[-1].is_zero():
+        cn.pop()
+    while len(cd) > 1 and cd[-1].is_zero():
+        cd.pop()
+    if len(cd) < 2:
+        a.why = "分母が定数です"
+        return a
+    if len(cn) >= len(cd):                           # 仮分数なら先に割る
+        q, cn = poly_divmod(cn, cd)
+    else:
+        q = [X.Rat(0)]
+    a.poly = S.from_coeffs(q, var)
+
+    got = S.rational_roots(cd)
+    if got is None or len(got[0]) + 1 != len(cd):
+        a.why = "分母が相異なる 1 次因数の積になりません"
+        return a
+    roots = got[0]
+    for i in range(len(roots)):
+        for j in range(i + 1, len(roots)):
+            if roots[i] == roots[j]:
+                a.why = "分母に重解があります（この型は未対応）"
+                return a
+    dd = [cd[i] * X.Rat(i) for i in range(1, len(cd))]        # D'(x)
+
+    def at(c, x):
+        v, pw = X.Rat(0), X.Rat(1)
+        for q0 in c:
+            v = v + q0 * pw
+            pw = pw * x
+        return v
+
+    for ri in roots:
+        dv = at(dd, ri)
+        if dv.is_zero():
+            a.why = "分母の微分が 0 になりました"
+            return a
+        a.parts.append((at(cn, ri) / dv, ri))
+    a.ok = True
+    return a
+
+
+def apart_expr(a, var):
+    ts = []
+    if not (X.is_num(a.poly) and a.poly.num.is_zero()):
+        ts.append(a.poly)
+    for ai, ri in a.parts:
+        ts.append(X.mul_n([X.num(ai),
+                           X.pow_e(X.add_n([X.sym(var), X.num(-ri)]), X.num(-1))]))
+    return X.num(0) if not ts else X.add_n(ts)
+
+
 def is_poly_in(e, var):
     """var の多項式か（部分積分で「微分するほう」に回せる形か）。"""
     if not has_var(e, var):
@@ -266,6 +364,9 @@ def integ_term(t, var):
             sub = integ_term(rest[0] if len(rest) == 1 else X.mul_n(rest), var)
             if sub is None:
                 return None
+            # 中身が和なら係数を配る（2*(-ln(..)/2 + ln(..)/2) のままだと読みにくい）
+            if sub[0].k == X.ADD:
+                return (X.add_n([X.mul_n([X.num(c), k]) for k in sub[0].kids]), sub[1])
             return (X.mul_n([X.num(c), sub[0]]), sub[1])
     if t.k == X.SYM and t.name == var:
         return (X.mul_n([X.num(X.Rat(1, 2)), X.pow_e(X.sym(var), X.num(2))]), "x の n 乗の積分")
@@ -289,18 +390,19 @@ def integ_term(t, var):
                     return (X.mul_n([X.num(X.Rat(-1) / ab2[0]),
                                      X.pow_e(X.fn_e("tan", [b.kids[0]]), X.num(-1))]),
                             "1/sin^2 の積分")
-        if not X.is_num(p) or has_var(p, var):
-            return None
-        ab = linear_in(b, var)
-        if ab is None or ab[0].is_zero():
-            return None
-        a, c = ab
-        if p.num == X.Rat(-1):
-            return (X.mul_n([X.num(X.Rat(1) / a), X.fn_e("ln", [X.fn_e("abs", [b])])]),
-                    "1/x の積分" if c.is_zero() else "1 次の中身の 1/(ax+b)")
-        np = p.num + X.Rat(1)
-        return (X.mul_n([X.num(X.Rat(1) / (a * np)), X.pow_e(b, X.num(np))]),
-                "x の n 乗の積分" if b.k == X.SYM else "1 次の中身の n 乗")
+        # **中身が 1 次のときだけここで片づく**。そうでなければ下の有理関数の道に落とす
+        # （1/(x^2 - 1) は部分分数に分ければ積分できる）
+        if X.is_num(p) and not has_var(p, var):
+            ab = linear_in(b, var)
+            if ab is not None and not ab[0].is_zero():
+                a, c = ab
+                if p.num == X.Rat(-1):
+                    return (X.mul_n([X.num(X.Rat(1) / a),
+                                     X.fn_e("ln", [X.fn_e("abs", [b])])]),
+                            "1/x の積分" if c.is_zero() else "1 次の中身の 1/(ax+b)")
+                np = p.num + X.Rat(1)
+                return (X.mul_n([X.num(X.Rat(1) / (a * np)), X.pow_e(b, X.num(np))]),
+                        "x の n 乗の積分" if b.k == X.SYM else "1 次の中身の n 乗")
     if t.k == X.FN and len(t.kids) == 1:
         f = t.kids[0]
         ab = linear_in(f, var)
@@ -323,7 +425,24 @@ def integ_term(t, var):
             return (X.mul_n([ia, X.add_n([X.mul_n([f, X.fn_e("ln", [f])]),
                                           X.mul_n([X.num(-1), f])])]), "ln の積分")
         return None
-    return by_parts(t, var)
+    got = by_parts(t, var)
+    if got is not None:
+        return got
+    # 有理関数は**部分分数に分けてから**積分する（log の和になる）
+    ap = apart(t, var)
+    if ap.ok and ap.parts:
+        ts = []
+        if not (X.is_num(ap.poly) and ap.poly.num.is_zero()):
+            pi = integ_any(ap.poly, var)
+            if pi is None:
+                return None
+            ts.append(pi)
+        for ai, ri in ap.parts:
+            ts.append(X.mul_n([X.num(ai),
+                               X.fn_e("ln", [X.fn_e("abs", [X.add_n([X.sym(var),
+                                                                     X.num(-ri)])])])]))
+        return (X.add_n(ts), "部分分数分解")
+    return None
 
 
 def integrate(e, want_var="", lo=None, hi=None):
@@ -381,6 +500,7 @@ def main():
     ap.add_argument("--expr", required=True)
     ap.add_argument("--var", default="")
     ap.add_argument("--integ", action="store_true")
+    ap.add_argument("--apart", action="store_true")
     ap.add_argument("--from", dest="lo", default="")
     ap.add_argument("--to", dest="hi", default="")
     ap.add_argument("--steps", action="store_true")
@@ -400,6 +520,16 @@ def main():
         if e3:
             print("parse error(--to): %s" % e3)
             return 1
+    if a.apart:                                      # 部分分数分解（積分の道具でもある）
+        vs = X.collect_syms(e)
+        v = a.var or (vs[0] if vs else "x")
+        ap = apart(e, v)
+        if not ap.ok:
+            print(ap.why)
+            return 1
+        out = apart_expr(ap, v)
+        print(X.to_latex(out) if a.latex else X.to_infix(out))
+        return 0
     r = integrate(e, a.var, lo, hi) if a.integ else differentiate(e, a.var)
     if a.steps:
         for i, st in enumerate(r.steps, 1):

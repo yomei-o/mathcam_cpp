@@ -132,6 +132,8 @@ python tools/parity/photo.py  --n 20   # 写真 1 枚の道（自作ランタイ
 ./mathcam.exe limit --expr "(x^2 - 1)/(x - 1)" --to 1    # 2（0/0 を約分する）
 ./mathcam.exe limit --expr "(2x^2 + 1)/(x^2 - x)" --to inf   # 2（最高次で割る）
 ./mathcam.exe area  --expr "x^2" --and "x"          # 1/6（交点を求めて ∫(上 - 下)）
+./mathcam.exe apart --expr "1/(x^2 - 1)"            # 部分分数分解 -> 1/(2(x-1)) - 1/(2(x+1))
+./mathcam.exe integ --expr "1/(x^2 - 1)"            # 分けてから積分 -> log の和
 
 # 場合の数（数学 A）
 ./mathcam.exe eval --expr "C(10, 3) + 5!"           # 240
