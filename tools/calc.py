@@ -276,7 +276,7 @@ def main():
     ap.add_argument("--to", dest="hi", default="")
     ap.add_argument("--steps", action="store_true")
     ap.add_argument("--latex", action="store_true")
-    a = ap.parse_args()
+    a = ap.parse_args(X.cli_argv(("--expr", "--var", "--from", "--to")))
     e, err = X.parse(a.expr)
     if err:
         print("parse error: %s" % err)

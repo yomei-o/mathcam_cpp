@@ -631,7 +631,10 @@ inline std::string to_infix(const E& e, int parent) {
       // ので、印字したものを読み直せなくなる（往復不変が壊れる）。
       const bool need = !is_num(p) || !p->num.is_int() || p->num.neg();
       const std::string ps = need ? "(" + to_infix(p) + ")" : to_infix(p);
-      return wrap(b, 4) + "^" + ps;
+      // **底が負の数や分数のときも括弧が要る**。(1/2)^n を "1/2^(n)" と書くと 1/(2^n) に、
+      // (-2)^n を "-2^(n)" と書くと -(2^n) に読み戻ってしまう（等比数列の公比でよく出る）。
+      const bool bneed = is_num(b) && (b->num.neg() || !b->num.is_int());
+      return (bneed ? "(" + to_infix(b) + ")" : wrap(b, 4)) + "^" + ps;
     }
     case Kind::Fn: {
       std::string s = e->name + "(";
@@ -711,10 +714,16 @@ inline std::string to_latex(const E& e, int parent = 0) {
         return "\\frac{1}{" +
                to_latex(p->num.n == -1 && p->num.d == 1 ? b : pow_e(b, num(-p->num))) + "}";
       std::string bs = to_latex(b, 4);
-      if (b->k == Kind::Add || b->k == Kind::Mul || b->k == Kind::Pow) bs = "(" + bs + ")";
+      if (b->k == Kind::Add || b->k == Kind::Mul || b->k == Kind::Pow ||
+          (is_num(b) && (b->num.neg() || !b->num.is_int())))
+        bs = "(" + bs + ")";                           // (-2)^n を -2^n と書かない
       return bs + "^{" + to_latex(p) + "}";
     }
     case Kind::Fn: {
+      // Σ は sum(k, 1, n, 中身) の 4 引数で持ち、印字だけ数学の形にする
+      if (e->name == "sum" && e->kids.size() == 4)
+        return "\\sum_{" + to_latex(e->kids[0]) + "=" + to_latex(e->kids[1]) + "}^{" +
+               to_latex(e->kids[2]) + "} " + to_latex(e->kids[3], 4);
       std::string s = "\\" + e->name + "(";
       for (size_t i = 0; i < e->kids.size(); ++i) { if (i) s += ", "; s += to_latex(e->kids[i]); }
       return s + ")";
@@ -745,7 +754,7 @@ inline std::string to_latex(const E& e, int parent = 0) {
 // 関数として扱う名前（これ以外の名前 + 括弧は掛け算）
 inline bool is_fn_name(const std::string& n) {
   return n == "sqrt" || n == "frac" || n == "mixed" || n == "sin" || n == "cos" || n == "tan" || n == "ln" || n == "exp" ||
-         n == "abs";
+         n == "abs" || n == "sum";
 }
 
 struct Parser {

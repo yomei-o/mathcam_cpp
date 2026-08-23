@@ -19,6 +19,7 @@
 #include "solve.hpp"
 #include "arith.hpp"
 #include "calc.hpp"
+#include "seq.hpp"
 #include "typeset_impl.hpp"
 #include "gen_expr.hpp"
 #include "parse_layout.hpp"
@@ -273,6 +274,86 @@ static int cmd_calc(int argc, char** argv, bool integral) {
              (latex ? ex::to_latex(r.steps[i].after) : ex::to_infix(r.steps[i].after)).c_str());
   for (const std::string& line : cal::answer_lines(r, latex, integral))
     printf("%s\n", line.c_str());
+  return r.ok ? 0 : 1;
+}
+
+// mathcam sum — Σ を計算する。--expr に sum(k, 1, n, k^2) と書いても、
+// --var/--from/--to で分けて書いてもよい（積分の --from/--to と同じ形にそろえてある）。
+static int cmd_sum(int argc, char** argv) {
+  std::string src = arg_of(argc, argv, "--expr", "");
+  std::string var = arg_of(argc, argv, "--var", "k");
+  const bool steps = has_flag(argc, argv, "--steps");
+  const bool latex = has_flag(argc, argv, "--latex");
+  const std::string from = arg_of(argc, argv, "--from", "1");
+  const std::string to = arg_of(argc, argv, "--to", "n");
+  if (src.empty()) {
+    printf("usage: mathcam sum --expr \"k^2\" [--var k] [--from 1] [--to n] [--steps] [--latex]\n"
+           "       mathcam sum --expr \"sum(k, 1, n, k^2)\" [--steps]\n");
+    return 1;
+  }
+  std::string why;
+  ex::E e = ex::parse(src, &why);
+  if (!why.empty()) { printf("parse error: %s\n", why.c_str()); return 1; }
+  ex::E lo, hi;
+  if (seqs::is_sum(e)) {                             // sum(k, 1, n, 中身) と書かれた形
+    var = e->kids[0]->name;
+    lo = e->kids[1];
+    hi = e->kids[2];
+    e = e->kids[3];
+  } else {
+    lo = ex::parse(from, &why);
+    if (!why.empty()) { printf("parse error(--from): %s\n", why.c_str()); return 1; }
+    hi = ex::parse(to, &why);
+    if (!why.empty()) { printf("parse error(--to): %s\n", why.c_str()); return 1; }
+  }
+  const seqs::Sum r = seqs::sigma(e, var, lo, hi);
+  if (steps)
+    for (size_t i = 0; i < r.steps.size(); ++i)
+      printf("%zu. [%s] %s\n   %s\n", i + 1, r.steps[i].rule.c_str(), r.steps[i].note.c_str(),
+             (latex ? ex::to_latex(r.steps[i].after) : ex::to_infix(r.steps[i].after)).c_str());
+  for (const std::string& line : seqs::answer_lines(r, latex)) printf("%s\n", line.c_str());
+  return r.ok ? 0 : 1;
+}
+
+// mathcam seq — 項の並びから数列を見分けて、一般項と和を出す
+static int cmd_seq(int argc, char** argv) {
+  const std::string src = arg_of(argc, argv, "--terms", "");
+  const std::string var = arg_of(argc, argv, "--var", "n");
+  const bool steps = has_flag(argc, argv, "--steps");
+  const bool latex = has_flag(argc, argv, "--latex");
+  const long long nth = std::atoll(arg_of(argc, argv, "--nth", "0").c_str());
+  if (src.empty()) {
+    printf("usage: mathcam seq --terms \"2, 5, 8, 11\" [--nth 10] [--steps] [--latex]\n");
+    return 1;
+  }
+  std::vector<ex::Rat> a;
+  std::string cur;
+  for (size_t i = 0; i <= src.size(); ++i) {
+    if (i == src.size() || src[i] == ',') {
+      if (!cur.empty()) {
+        std::string why;
+        const ex::E v = ex::parse(cur, &why);
+        if (!why.empty() || !ex::is_num(v)) {
+          printf("項が数ではありません: %s\n", cur.c_str());
+          return 1;
+        }
+        a.push_back(v->num);
+      }
+      cur.clear();
+      continue;
+    }
+    cur += src[i];
+  }
+  seqs::Seq r = seqs::analyze(a, var);
+  if (r.ok && nth > 0) {
+    r.nth_i = nth;
+    r.nth = ex::simp(ex::subst(r.term, var, ex::num(ex::Rat(nth))));
+  }
+  if (steps)
+    for (size_t i = 0; i < r.steps.size(); ++i)
+      printf("%zu. [%s] %s\n   %s\n", i + 1, r.steps[i].rule.c_str(), r.steps[i].note.c_str(),
+             (latex ? ex::to_latex(r.steps[i].after) : ex::to_infix(r.steps[i].after)).c_str());
+  for (const std::string& line : seqs::answer_lines(r, latex)) printf("%s\n", line.c_str());
   return r.ok ? 0 : 1;
 }
 
@@ -972,7 +1053,7 @@ int main(int argc, char** argv) {
   }
 #endif
   if (argc < 2) {
-    printf("usage: mathcam <eval|solve|render|dataset|parse|selftest|photo> ...\n");
+    printf("usage: mathcam <eval|solve|diff|integ|sum|seq|render|dataset|parse|selftest|photo> ...\n");
     return 1;
   }
   const std::string cmd = argv[1];
@@ -981,6 +1062,8 @@ int main(int argc, char** argv) {
   if (cmd == "solve") return cmd_solve(argc, argv);
   if (cmd == "diff") return cmd_calc(argc, argv, false);
   if (cmd == "integ") return cmd_calc(argc, argv, true);
+  if (cmd == "sum") return cmd_sum(argc, argv);
+  if (cmd == "seq") return cmd_seq(argc, argv);
   if (cmd == "render") return cmd_render(argc, argv);
   if (cmd == "dataset") return cmd_dataset(argc, argv);
   if (cmd == "genexpr") return cmd_genexpr(argc, argv);

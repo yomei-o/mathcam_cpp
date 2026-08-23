@@ -619,7 +619,10 @@ def to_infix(e):
         # 分数・負の指数は括弧が必須。"2^1/2" は自分のパーサで (2^1)/2 に読めてしまう
         need = (not is_num(p)) or (not p.num.is_int()) or p.num.neg()
         ps = "(" + to_infix(p) + ")" if need else to_infix(p)
-        return _wrap(b, 4) + "^" + ps
+        # **底が負の数や分数のときも括弧が要る**。(1/2)^n を "1/2^(n)" と書くと 1/(2^n) に、
+        # (-2)^n を "-2^(n)" と書くと -(2^n) に読み戻ってしまう（等比数列の公比でよく出る）。
+        bneed = is_num(b) and (b.num.neg() or not b.num.is_int())
+        return ("(" + to_infix(b) + ")" if bneed else _wrap(b, 4)) + "^" + ps
     if e.k == FN:
         return e.name + "(" + ", ".join(to_infix(c) for c in e.kids) + ")"
     if e.k == REL:
@@ -674,10 +677,14 @@ def to_latex(e):
             inner = b if (p.num.n == -1 and p.num.d == 1) else pow_e(b, num(-p.num))
             return "\\frac{1}{" + to_latex(inner) + "}"
         bs = to_latex(b)
-        if b.k in (ADD, MUL, POW):
-            bs = "(" + bs + ")"
+        if b.k in (ADD, MUL, POW) or (is_num(b) and (b.num.neg() or not b.num.is_int())):
+            bs = "(" + bs + ")"                        # (-2)^n を -2^n と書かない
         return bs + "^{" + to_latex(p) + "}"
     if e.k == FN:
+        # Σ は sum(k, 1, n, 中身) の 4 引数で持ち、印字だけ数学の形にする
+        if e.name == "sum" and len(e.kids) == 4:
+            return ("\\sum_{" + to_latex(e.kids[0]) + "=" + to_latex(e.kids[1]) + "}^{" +
+                    to_latex(e.kids[2]) + "} " + to_latex(e.kids[3]))
         return "\\" + e.name + "(" + ", ".join(to_latex(c) for c in e.kids) + ")"
     if e.k == REL:
         op = {"<=": "\\le", ">=": "\\ge"}.get(e.name, e.name)
@@ -690,7 +697,7 @@ def to_latex(e):
 # ---------------------------------------------------------------- 構文解析
 
 
-FN_NAMES = ("sqrt", "frac", "mixed", "sin", "cos", "tan", "ln", "exp", "abs")
+FN_NAMES = ("sqrt", "frac", "mixed", "sin", "cos", "tan", "ln", "exp", "abs", "sum")
 
 
 def is_fn_name(n):
@@ -981,6 +988,27 @@ def approx(e):
     if e.k == REL:
         return approx(e.kids[0]) - approx(e.kids[1])
     return 0.0                                     # 連立に数値はない（呼ぶ側で弾く）
+
+
+def cli_argv(flags, argv=None):
+    """argparse に渡す前に「値を取る旗」と次の語を = でつなぐ。
+
+    argparse は空白を含まない `-x^2+4<0` を**旗**と読んでしまい、エラーで止まる
+    （空白があると値として通るので、テストの式にたまたま空白があると気づけない）。
+    C++ 側の arg_of は次の語をそのまま値にするので、直さないと同じ入力で結果が変わる。
+    """
+    import sys as _sys
+    argv = list(_sys.argv[1:] if argv is None else argv)
+    out = []
+    i = 0
+    while i < len(argv):
+        if argv[i] in flags and i + 1 < len(argv):
+            out.append(argv[i] + "=" + argv[i + 1])
+            i += 2
+            continue
+        out.append(argv[i])
+        i += 1
+    return out
 
 
 def main():
